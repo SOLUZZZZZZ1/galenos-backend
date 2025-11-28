@@ -16,6 +16,8 @@ import imaging
 import notes
 import timeline
 import stripe_payments  # 👈 Stripe (billing)
+import migrate_galenos
+
 
 
 # ======================================================
@@ -106,3 +108,4 @@ app.include_router(imaging.router)
 app.include_router(notes.router)
 app.include_router(timeline.router)
 app.include_router(stripe_payments.router)  # 👈 Billing / Stripe
+app.include_router(migrate_galenos.router)

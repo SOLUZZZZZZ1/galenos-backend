@@ -1,0 +1,178 @@
+# migrate_galenos.py — Migraciones básicas para Galenos.pro (idempotentes)
+#
+# Crea y asegura las tablas:
+# - users
+# - patients
+# - analytics
+# - analytic_markers
+# - imaging
+# - imaging_patterns
+# - clinical_notes
+# - timeline_items
+#
+# Uso:
+# 1) Incluir este router en app.py:
+#       import migrate_galenos
+#       app.include_router(migrate_galenos.router)
+#
+# 2) Llamar al endpoint:
+#    POST /admin/migrate-galenos/init  con cabecera:  x-admin-token: TU_TOKEN
+#
+# 3) Se crearán las tablas si no existen (no borra nada).
+
+import os
+from fastapi import APIRouter, Header, HTTPException
+from sqlalchemy import text
+from database import engine
+
+router = APIRouter(prefix="/admin/migrate-galenos", tags=["admin-migrate-galenos"])
+
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "GalenosAdminToken@123"
+
+
+# --- Autenticación simple admin ---
+def _auth(x_admin_token: str | None):
+    if x_admin_token != ADMIN_TOKEN:
+        raise HTTPException(401, "Unauthorized")
+
+
+# ==============================
+# SQL DE CREACIÓN DE TABLAS
+# ==============================
+
+SQL_USERS = """
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    name TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    last_login TIMESTAMP NULL,
+    is_active INTEGER DEFAULT 1
+);
+"""
+
+SQL_PATIENTS = """
+CREATE TABLE IF NOT EXISTS patients (
+    id SERIAL PRIMARY KEY,
+    doctor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    alias TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+SQL_ANALYTICS = """
+CREATE TABLE IF NOT EXISTS analytics (
+    id SERIAL PRIMARY KEY,
+    patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+    summary TEXT,
+    differential TEXT,
+    file_path TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+SQL_ANALYTIC_MARKERS = """
+CREATE TABLE IF NOT EXISTS analytic_markers (
+    id SERIAL PRIMARY KEY,
+    analytic_id INTEGER NOT NULL REFERENCES analytics(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    value DOUBLE PRECISION,
+    unit TEXT,
+    ref_min DOUBLE PRECISION,
+    ref_max DOUBLE PRECISION
+);
+"""
+
+SQL_IMAGING = """
+CREATE TABLE IF NOT EXISTS imaging (
+    id SERIAL PRIMARY KEY,
+    patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+    type TEXT,
+    summary TEXT,
+    differential TEXT,
+    file_path TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+SQL_IMAGING_PATTERNS = """
+CREATE TABLE IF NOT EXISTS imaging_patterns (
+    id SERIAL PRIMARY KEY,
+    imaging_id INTEGER NOT NULL REFERENCES imaging(id) ON DELETE CASCADE,
+    pattern_text TEXT NOT NULL
+);
+"""
+
+SQL_CLINICAL_NOTES = """
+CREATE TABLE IF NOT EXISTS clinical_notes (
+    id SERIAL PRIMARY KEY,
+    patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+    doctor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+SQL_TIMELINE_ITEMS = """
+CREATE TABLE IF NOT EXISTS timeline_items (
+    id SERIAL PRIMARY KEY,
+    patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+    item_type TEXT NOT NULL, -- 'patient' | 'analytic' | 'imaging' | 'note'
+    item_id INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+SQL_INDEXES = """
+-- Índices útiles
+CREATE INDEX IF NOT EXISTS idx_patients_doctor_id ON patients (doctor_id);
+CREATE INDEX IF NOT EXISTS idx_analytics_patient_id ON analytics (patient_id);
+CREATE INDEX IF NOT EXISTS idx_markers_analytic_id ON analytic_markers (analytic_id);
+CREATE INDEX IF NOT EXISTS idx_imaging_patient_id ON imaging (patient_id);
+CREATE INDEX IF NOT EXISTS idx_notes_patient_id ON clinical_notes (patient_id);
+CREATE INDEX IF NOT EXISTS idx_timeline_patient_id ON timeline_items (patient_id);
+"""
+
+
+# ==============================
+# ENDPOINTS DE MIGRACIÓN
+# ==============================
+
+@router.post("/init")
+def migrate_init(x_admin_token: str | None = Header(None)):
+    """
+    Crea todas las tablas de Galenos.pro si no existen.
+    No borra ni modifica datos existentes.
+    """
+    _auth(x_admin_token)
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(SQL_USERS))
+            conn.execute(text(SQL_PATIENTS))
+            conn.execute(text(SQL_ANALYTICS))
+            conn.execute(text(SQL_ANALYTIC_MARKERS))
+            conn.execute(text(SQL_IMAGING))
+            conn.execute(text(SQL_IMAGING_PATTERNS))
+            conn.execute(text(SQL_CLINICAL_NOTES))
+            conn.execute(text(SQL_TIMELINE_ITEMS))
+            conn.execute(text(SQL_INDEXES))
+
+        return {
+            "status": "ok",
+            "message": "Tablas de Galenos creadas/aseguradas correctamente."
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Error en migración Galenos: {e}")
+
+
+@router.get("/check")
+def migrate_check(x_admin_token: str | None = Header(None)):
+    """
+    Pequeña ruta para comprobar que el router admin responde.
+    No ejecuta migraciones, solo sirve de 'ping' para admins.
+    """
+    _auth(x_admin_token)
+    return {"status": "ok", "message": "migrate_galenos router activo."}
