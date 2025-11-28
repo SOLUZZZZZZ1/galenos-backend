@@ -11,9 +11,11 @@ from datetime import datetime
 class UserBase(BaseModel):
     email: EmailStr
 
+
 class UserCreate(UserBase):
     password: str
     name: Optional[str] = None
+
 
 class UserReturn(UserBase):
     id: int
@@ -31,6 +33,7 @@ class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -42,8 +45,10 @@ class TokenResponse(BaseModel):
 class PatientBase(BaseModel):
     alias: str
 
+
 class PatientCreate(PatientBase):
     pass
+
 
 class PatientReturn(PatientBase):
     id: int
@@ -90,6 +95,49 @@ class ImagingPatternReturn(BaseModel):
     class Config:
         from_attributes = True
 
+
 class ImagingReturn(BaseModel):
     id: int
-    type: Optional
+    type: Optional[str]  # ← AQUÍ estaba el problema (antes era Optional solo)
+    summary: Optional[str]
+    differential: Optional[str]
+    created_at: datetime
+    patterns: List[ImagingPatternReturn]
+
+    class Config:
+        from_attributes = True
+
+
+# ===============================================
+# NOTES (Notas clínicas)
+# ===============================================
+class ClinicalNoteBase(BaseModel):
+    title: str
+    content: str
+
+
+class ClinicalNoteCreate(ClinicalNoteBase):
+    pass
+
+
+class ClinicalNoteReturn(ClinicalNoteBase):
+    id: int
+    patient_id: int
+    doctor_id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ===============================================
+# TIMELINE
+# ===============================================
+class TimelineItemReturn(BaseModel):
+    id: int
+    item_type: str
+    item_id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
