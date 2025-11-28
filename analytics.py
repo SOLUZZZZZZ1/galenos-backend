@@ -1,21 +1,32 @@
-# analytics.py — Endpoints para analíticas reales
+# analytics.py — Endpoints para analíticas reales con IA (con fallback seguro)
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy.orm import Session
 from auth import get_current_user
 from database import get_db
+
 from openai import OpenAI
 import base64
+
 from utils_pdf import convert_pdf_to_images
 from utils_vision import analyze_with_ai_vision
 from prompts_galenos import SYSTEM_PROMPT_GALENOS
 import crud
 from schemas import AnalyticReturn
 
-
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
-client = OpenAI()
+
+def get_openai_client():
+    """
+    Crea un cliente OpenAI. Si falla (por problemas de entorno, proxies, etc.),
+    devuelve None para que el backend siga vivo y use un fallback.
+    """
+    try:
+        return OpenAI()
+    except Exception as e:
+        print("[OpenAI] Error creando cliente OpenAI:", repr(e))
+        return None
 
 
 @router.post("/upload", response_model=AnalyticReturn)
@@ -42,14 +53,36 @@ async def upload_analytic(
     if not images_b64:
         raise HTTPException(400, "No se pudo procesar la analítica.")
 
-    # IA Vision
-    summary, differential, markers = analyze_with_ai_vision(
-        client=client,
-        images_b64=images_b64,
-        patient_alias=patient.alias,
-        model="gpt-4o",
-        system_prompt=SYSTEM_PROMPT_GALENOS
-    )
+    # Intentar crear cliente OpenAI
+    client = get_openai_client()
+
+    if client:
+        # IA Vision real
+        try:
+            summary, differential, markers = analyze_with_ai_vision(
+                client=client,
+                images_b64=images_b64,
+                patient_alias=patient.alias,
+                model="gpt-4o",
+                system_prompt=SYSTEM_PROMPT_GALENOS,
+            )
+        except Exception as e:
+            print("[OpenAI] Error llamando a Vision:", repr(e))
+            # Fallback si la llamada a IA falla
+            summary = (
+                "No se ha podido generar el resumen con IA en este momento. "
+                "Interpretar la analítica bajo el criterio clínico."
+            )
+            differential = ["Error temporal de IA, repetir más tarde."]
+            markers = []
+    else:
+        # Fallback si no tenemos cliente OpenAI
+        summary = (
+            "IA no disponible en este entorno. Esta es una respuesta de ejemplo. "
+            "Interprete la analítica bajo su criterio clínico."
+        )
+        differential = ["Posible alteración metabólica a valorar.", "Correlación clínica necesaria."]
+        markers = []
 
     # Guardar en BD
     analytic = crud.create_analytic(
@@ -57,12 +90,15 @@ async def upload_analytic(
         patient_id=patient.id,
         summary=summary,
         differential=differential,
-        file_path=None
+        file_path=None,
     )
 
-    crud.add_markers_to_analytic(db, analytic.id, markers)
+    if markers:
+        crud.add_markers_to_analytic(db, analytic.id, markers)
 
-    # Devolver con markers cargados
-    analytic.markers = crud.get_analytics_for_patient(db, patient.id)[0].markers
+    # Recargar analítica con markers
+    analytics_for_patient = crud.get_analytics_for_patient(db, patient.id)
+    # La primera será la más reciente
+    full = next((a for a in analytics_for_patient if a.id == analytic.id), analytic)
 
-    return analytic
+    return full
