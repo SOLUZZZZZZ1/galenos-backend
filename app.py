@@ -4,17 +4,18 @@ import os
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from openai import OpenAI
 
 from database import Base, engine, get_db
 from models import User
 from schemas import UserCreate, LoginRequest, TokenResponse, UserReturn
 from auth import register_user, login_user, get_current_user
+
 import patients
 import analytics
 import imaging
 import notes
 import timeline
+import stripe_payments  # 👈 Stripe (billing)
 
 
 # ======================================================
@@ -55,7 +56,15 @@ app.add_middleware(
 
 
 # ======================================================
-# RUTAS BÁSICAS
+# RUTA RAÍZ (para Render / healthcheck)
+# ======================================================
+@app.get("/")
+def root():
+    return {"ok": True, "message": "Galenos.pro API raíz"}
+
+
+# ======================================================
+# RUTA PING
 # ======================================================
 @app.get("/ping")
 def ping():
@@ -96,3 +105,4 @@ app.include_router(analytics.router)
 app.include_router(imaging.router)
 app.include_router(notes.router)
 app.include_router(timeline.router)
+app.include_router(stripe_payments.router)  # 👈 Billing / Stripe
