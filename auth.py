@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
-import jwt
+import jwt  # PyJWT
 
 from sqlalchemy.orm import Session
 from database import get_db
@@ -33,16 +33,15 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
+
 def verify_password(password: str, password_hash: str) -> bool:
     return pwd_context.verify(password, password_hash)
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
-
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
-
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
@@ -82,4 +81,33 @@ def login_user(login_data: LoginRequest, db: Session):
     user.last_login = datetime.utcnow()
     db.commit()
 
-    access_token = creat_
+    access_token = create_access_token({"sub": str(user.id)})
+
+    return TokenResponse(access_token=access_token)
+
+
+# ======================================================
+# OBTENER USUARIO ACTUAL (PROTECCIÓN DE RUTAS)
+# ======================================================
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if not user_id:
+            raise Exception("Token sin usuario")
+
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token inválido o expirado",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user = db.query(User).filter(User.id == int(user_id)).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Usuario no encontrado")
+
+    return user
