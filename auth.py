@@ -1,0 +1,85 @@
+# auth.py — Autenticación para Galenos.pro (JWT + hashing)
+
+import os
+from datetime import datetime, timedelta
+from typing import Optional
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from passlib.context import CryptContext
+import jwt
+
+from sqlalchemy.orm import Session
+from database import get_db
+from models import User
+from schemas import UserCreate, LoginRequest, TokenResponse
+
+
+# ======================================================
+# CONFIG JWT
+# ======================================================
+SECRET_KEY = os.getenv("SECRET_KEY", "galenos-secret-key")  # cámbiala en PRODUCCIÓN
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24h
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+# ======================================================
+# UTILIDADES
+# ======================================================
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+def verify_password(password: str, password_hash: str) -> bool:
+    return pwd_context.verify(password, password_hash)
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+# ======================================================
+# REGISTRO DE MÉDICO
+# ======================================================
+def register_user(user_data: UserCreate, db: Session):
+    existing = db.query(User).filter(User.email == user_data.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="El correo ya está registrado.")
+
+    hashed = hash_password(user_data.password)
+
+    user = User(
+        email=user_data.email,
+        password_hash=hashed,
+        name=user_data.name
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    return user
+
+
+# ======================================================
+# LOGIN DE MÉDICO
+# ======================================================
+def login_user(login_data: LoginRequest, db: Session):
+    user = db.query(User).filter(User.email == login_data.email).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Credenciales incorrectas.")
+
+    if not verify_password(login_data.password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Credenciales incorrectas.")
+
+    user.last_login = datetime.utcnow()
+    db.commit()
+
+    access_token = creat_
