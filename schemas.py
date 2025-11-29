@@ -1,5 +1,3 @@
-# schemas.py — Esquemas Pydantic para Galenos.pro
-
 from pydantic import BaseModel, EmailStr
 from typing import List, Optional
 from datetime import datetime
@@ -11,11 +9,9 @@ from datetime import datetime
 class UserBase(BaseModel):
     email: EmailStr
 
-
 class UserCreate(UserBase):
     password: str
     name: Optional[str] = None
-
 
 class UserReturn(UserBase):
     id: int
@@ -33,7 +29,6 @@ class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
-
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -45,10 +40,8 @@ class TokenResponse(BaseModel):
 class PatientBase(BaseModel):
     alias: str
 
-
 class PatientCreate(PatientBase):
     pass
-
 
 class PatientReturn(PatientBase):
     id: int
@@ -95,10 +88,9 @@ class ImagingPatternReturn(BaseModel):
     class Config:
         from_attributes = True
 
-
 class ImagingReturn(BaseModel):
     id: int
-    type: Optional[str]  # ← AQUÍ estaba el problema (antes era Optional solo)
+    type: Optional[str]
     summary: Optional[str]
     differential: Optional[str]
     created_at: datetime
@@ -115,10 +107,8 @@ class ClinicalNoteBase(BaseModel):
     title: str
     content: str
 
-
 class ClinicalNoteCreate(ClinicalNoteBase):
     pass
-
 
 class ClinicalNoteReturn(ClinicalNoteBase):
     id: int
@@ -141,3 +131,17 @@ class TimelineItemReturn(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ===============================================
+# INVITATIONS
+# ===============================================
+class InvitationReturn(BaseModel):
+    invite_url: str
+
+
+class RegisterWithInviteRequest(BaseModel):
+    email: EmailStr
+    password: str
+    name: Optional[str] = None
+    token: str
