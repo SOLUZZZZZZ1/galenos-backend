@@ -178,6 +178,9 @@ def register_user_with_invitation(data: RegisterWithInviteRequest, db: Session):
 # ======================================================
 # REGISTER-MASTER (solo 1 ejecución)
 # ======================================================
+# ======================================================
+# REGISTER MASTER (solo 1 vez y luego bloqueado)
+# ======================================================
 MASTER_LOCK_FILE = "master_lock.txt"
 
 def register_master(db: Session, secret: str):
@@ -189,12 +192,16 @@ def register_master(db: Session, secret: str):
     if os.path.exists(MASTER_LOCK_FILE):
         raise HTTPException(status_code=403, detail="El usuario master ya existe y el endpoint está bloqueado.")
 
+    # Truncado seguro para bcrypt
+    raw_password = "galenos8354@"
+    safe_password = raw_password.encode("utf-8")[:72].decode("utf-8", "ignore")
+
     # Crear usuario master
     existing = db.query(User).filter(User.email == "soluzziona@gmail.com").first()
     if not existing:
         user = User(
             email="soluzziona@gmail.com",
-            password_hash=hash_password("galenos8354@"),
+            password_hash=hash_password(safe_password),
             name="Master"
         )
         db.add(user)
