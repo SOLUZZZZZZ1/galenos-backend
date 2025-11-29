@@ -1,5 +1,3 @@
-# auth.py — Autenticación para Galenos.pro (JWT + hashing)
-
 import os
 from datetime import datetime, timedelta
 from typing import Optional
@@ -11,8 +9,15 @@ import jwt  # PyJWT
 
 from sqlalchemy.orm import Session
 from database import get_db
-from models import User
-from schemas import UserCreate, LoginRequest, TokenResponse
+from models import User, Invitation, AccessRequest
+from schemas import (
+    UserCreate,
+    LoginRequest,
+    TokenResponse,
+    UserReturn,
+    RegisterWithInviteRequest
+)
+from secrets import token_urlsafe
 
 
 # ======================================================
@@ -46,7 +51,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
 
 
 # ======================================================
-# REGISTRO DE MÉDICO
+# REGISTRO NORMAL (no lo usamos, pero se mantiene)
 # ======================================================
 def register_user(user_data: UserCreate, db: Session):
     existing = db.query(User).filter(User.email == user_data.email).first()
@@ -68,7 +73,7 @@ def register_user(user_data: UserCreate, db: Session):
 
 
 # ======================================================
-# LOGIN DE MÉDICO
+# LOGIN
 # ======================================================
 def login_user(login_data: LoginRequest, db: Session):
     user = db.query(User).filter(User.email == login_data.email).first()
@@ -87,7 +92,7 @@ def login_user(login_data: LoginRequest, db: Session):
 
 
 # ======================================================
-# OBTENER USUARIO ACTUAL (PROTECCIÓN DE RUTAS)
+# OBTENER USUARIO ACTUAL (JWT)
 # ======================================================
 def get_current_user(
     token: str = Depends(oauth2_scheme),
@@ -111,3 +116,92 @@ def get_current_user(
         raise HTTPException(status_code=401, detail="Usuario no encontrado")
 
     return user
+
+
+# ======================================================
+# CREAR INVITACIÓN ENTRE MÉDICOS
+# ======================================================
+def create_invitation(db: Session, current_user: User):
+    token = token_urlsafe(32)
+
+    invitation = Invitation(
+        token=token,
+        created_by_id=current_user.id,
+        created_at=datetime.utcnow(),
+        expires_at=datetime.utcnow() + timedelta(days=30),
+        max_uses=1,
+        used_count=0,
+    )
+
+    db.add(invitation)
+    db.commit()
+    db.refresh(invitation)
+
+    return {"invite_url": f"https://galenos.pro/registro?token={token}"}
+
+
+# ======================================================
+# REGISTRAR USUARIO DESDE INVITACIÓN
+# ======================================================
+def register_user_with_invitation(data: RegisterWithInviteRequest, db: Session):
+    invitation = db.query(Invitation).filter(Invitation.token == data.token).first()
+    if not invitation:
+        raise HTTPException(status_code=400, detail="Invitación no válida.")
+
+    if invitation.expires_at and invitation.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="La invitación ha caducado.")
+
+    if invitation.used_count >= invitation.max_uses:
+        raise HTTPException(status_code=400, detail="La invitación ya ha sido utilizada.")
+
+    existing = db.query(User).filter(User.email == data.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="El correo ya está registrado.")
+
+    hashed = hash_password(data.password)
+
+    user = User(
+        email=data.email,
+        password_hash=hashed,
+        name=data.name
+    )
+    db.add(user)
+
+    invitation.used_count += 1
+    db.commit()
+    db.refresh(user)
+
+    access_token = create_access_token({"sub": str(user.id)})
+    return TokenResponse(access_token=access_token)
+
+
+# ======================================================
+# REGISTER-MASTER (solo 1 ejecución)
+# ======================================================
+MASTER_LOCK_FILE = "master_lock.txt"
+
+def register_master(db: Session, secret: str):
+    # Verificar secreto
+    if secret != "galenos123":
+        raise HTTPException(status_code=403, detail="Secreto incorrecto.")
+
+    # Si existe el lock, bloquear
+    if os.path.exists(MASTER_LOCK_FILE):
+        raise HTTPException(status_code=403, detail="El usuario master ya existe y el endpoint está bloqueado.")
+
+    # Crear usuario master
+    existing = db.query(User).filter(User.email == "soluzziona@gmail.com").first()
+    if not existing:
+        user = User(
+            email="soluzziona@gmail.com",
+            password_hash=hash_password("galenos8354@"),
+            name="Master"
+        )
+        db.add(user)
+        db.commit()
+
+    # Crear lock
+    with open(MASTER_LOCK_FILE, "w") as f:
+        f.write("locked")
+
+    return {"ok": True, "message": "Usuario master creado correctamente."}

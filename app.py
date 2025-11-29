@@ -1,25 +1,39 @@
 import os
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
 from models import User, AccessRequest
-from schemas import UserCreate, LoginRequest, TokenResponse, UserReturn, RegisterWithInviteRequest, AccessRequestCreate, AccessRequestReturn
-from auth import register_user, login_user, get_current_user, create_invitation, register_user_with_invitation
+from schemas import (
+    UserCreate,
+    LoginRequest,
+    TokenResponse,
+    UserReturn,
+    RegisterWithInviteRequest,
+    AccessRequestCreate,
+    AccessRequestReturn
+)
+from auth import (
+    register_user,
+    login_user,
+    get_current_user,
+    create_invitation,
+    register_user_with_invitation,
+    register_master
+)
 
 import patients
 import analytics
 import imaging
 import notes
 import timeline
-import stripe_payments  # 👈 Stripe (billing)
+import stripe_payments
 import migrate_galenos
 
 
-
 # ======================================================
-# Inicializar BD (crear tablas si no existen)
+# INIT DB
 # ======================================================
 def init_db():
     Base.metadata.create_all(bind=engine)
@@ -28,23 +42,19 @@ init_db()
 
 
 # ======================================================
-# FastAPI APP
+# APP FASTAPI
 # ======================================================
 app = FastAPI(
     title="Galenos.pro API",
-    description="Backend clínico con IA para médicos (analíticas + imágenes + notas + timeline).",
     version="1.0.0",
+    description="Backend clínico con IA."
 )
 
 
 # ======================================================
 # CORS
 # ======================================================
-cors_origins_raw = os.getenv("CORS_ORIGINS", "*")
-if cors_origins_raw == "*" or not cors_origins_raw.strip():
-    origins = ["*"]
-else:
-    origins = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
+origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,40 +66,24 @@ app.add_middleware(
 
 
 # ======================================================
-# RUTA RAÍZ (para Render / healthcheck)
+# HEALTHCHECK
 # ======================================================
 @app.get("/")
 def root():
-    return {"ok": True, "message": "Galenos.pro API raíz"}
+    return {"ok": True, "message": "Galenos.pro API"}
 
 
 # ======================================================
-# RUTA PING
-# ======================================================
-@app.get("/ping")
-def ping():
-    return {"ok": True, "message": "Galenos.pro backend vivo", "version": "1.0.0"}
-
-
-# ======================================================
-# AUTH — Registro y login de médicos
+# LOGIN / REGISTER NORMAL
 # ======================================================
 @app.post("/auth/register", response_model=UserReturn)
-def auth_register(
-    data: UserCreate,
-    db: Session = Depends(get_db)
-):
-    user = register_user(data, db)
-    return user
+def auth_register(data: UserCreate, db: Session = Depends(get_db)):
+    return register_user(data, db)
 
 
 @app.post("/auth/login", response_model=TokenResponse)
-def auth_login(
-    data: LoginRequest,
-    db: Session = Depends(get_db)
-):
-    token = login_user(data, db)
-    return token
+def auth_login(data: LoginRequest, db: Session = Depends(get_db)):
+    return login_user(data, db)
 
 
 @app.get("/auth/me", response_model=UserReturn)
@@ -98,10 +92,10 @@ def auth_me(current_user: User = Depends(get_current_user)):
 
 
 # ======================================================
-# INVITACIONES (crear + registro desde invitación)
+# INVITACIONES
 # ======================================================
 @app.post("/auth/invitations/create")
-def auth_invitations_create(
+def auth_create_invite(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -113,21 +107,28 @@ def auth_register_from_invite(
     data: RegisterWithInviteRequest,
     db: Session = Depends(get_db)
 ):
-    token_response = register_user_with_invitation(data, db)
-    return token_response
+    return register_user_with_invitation(data, db)
 
 
 # ======================================================
-# SOLICITUDES DE ACCESO (sin invitación)
+# REGISTER MASTER (solo una ejecución)
 # ======================================================
-@app.post("/access-requests", response_model=AccessRequestReturn)
-def create_access_request(
-    data: AccessRequestCreate,
+@app.get("/auth/register-master")
+def auth_register_master(
+    secret: str = Query(...),
     db: Session = Depends(get_db)
 ):
+    return register_master(db, secret)
+
+
+# ======================================================
+# ACCESS REQUESTS
+# ======================================================
+@app.post("/access-requests", response_model=AccessRequestReturn)
+def create_access_request(data: AccessRequestCreate, db: Session = Depends(get_db)):
     ar = AccessRequest(
         name=data.name,
-        email=str(data.email),
+        email=data.email,
         country=data.country,
         city=data.city,
         speciality=data.speciality,
@@ -143,12 +144,12 @@ def create_access_request(
 
 
 # ======================================================
-# Incluir routers
+# INCLUDE ROUTERS
 # ======================================================
 app.include_router(patients.router)
 app.include_router(analytics.router)
 app.include_router(imaging.router)
 app.include_router(notes.router)
 app.include_router(timeline.router)
-app.include_router(stripe_payments.router)  # 👈 Billing / Stripe
+app.include_router(stripe_payments.router)
 app.include_router(migrate_galenos.router)
