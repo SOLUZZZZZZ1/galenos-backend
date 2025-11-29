@@ -21,14 +21,14 @@ else:
     print("⚠️ STRIPE_SECRET_KEY no definida. Stripe no funcionará.")
 
 
-@router.post("/create-checkout-session")
+@router.get("/create-checkout-session")
 async def create_checkout_session(
     request: Request,
     db: Session = Depends(get_db),
 ):
     """
     Crea una sesión de Checkout para Galenos PRO (10 €/mes, 3 días de prueba).
-    De momento no usa el usuario real, solo un email demo.
+    Versión sencilla: un único plan, 3 días de trial, email demo.
     """
 
     if not STRIPE_SECRET_KEY or not STRIPE_PRICE_ID:
@@ -46,7 +46,7 @@ async def create_checkout_session(
                     "quantity": 1,
                 }
             ],
-            subscription_data={          # 👈 Aquí va el trial, bien cerrado
+            subscription_data={
                 "trial_period_days": 3
             },
             success_url=f"{FRONTEND_BASE}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
