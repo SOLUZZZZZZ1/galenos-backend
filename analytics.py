@@ -1,104 +1,68 @@
-# analytics.py — Endpoints para analíticas reales con IA (con fallback seguro)
+# analytics.py — Analíticas · IA (MVP) para Galenos.pro
+import os
+from typing import List
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
-from sqlalchemy.orm import Session
-from auth import get_current_user
-from database import get_db
-
-from openai import OpenAI
-import base64
-
-from utils_pdf import convert_pdf_to_images
-from utils_vision import analyze_with_ai_vision
-from prompts_galenos import SYSTEM_PROMPT_GALENOS
-import crud
-from schemas import AnalyticReturn
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
-
-def get_openai_client():
-    """
-    Crea un cliente OpenAI. Si falla (por problemas de entorno, proxies, etc.),
-    devuelve None para que el backend siga vivo y use un fallback.
-    """
-    try:
-        return OpenAI()
-    except Exception as e:
-        print("[OpenAI] Error creando cliente OpenAI:", repr(e))
-        return None
+# En un futuro se podría integrar aquí un modelo de IA real (OpenAI, etc.).
+# De momento, este MVP genera un resumen orientativo a partir de datos fijos
+# y del alias del paciente + nombre del fichero.
 
 
-@router.post("/upload", response_model=AnalyticReturn)
-async def upload_analytic(
-    patient_id: int = Form(...),
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+@router.post("/analyze")
+async def analyze_lab_with_ai(
+    alias: str = Form(..., description="Alias del paciente"),
+    file: UploadFile = File(..., description="Analítica en PDF o imagen"),
 ):
-    # Verificar paciente
-    patient = crud.get_patient_by_id(db, patient_id, current_user.id)
-    if not patient:
-        raise HTTPException(404, "Paciente no encontrado.")
+    """
+    Recibe una analítica (PDF/imagen) y devuelve un resultado de IA simulado.
+    No se hace diagnóstico real; solo se generan textos orientativos fijos.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Fichero no válido")
 
-    filename = file.filename.lower()
-    content = await file.read()
+    # En un futuro podríamos guardar el fichero, extraer texto, etc.
+    # De momento, lo leemos por completo para 'simular' procesamiento y lo ignoramos.
+    try:
+        _ = await file.read()
+    except Exception:
+        raise HTTPException(status_code=500, detail="No se pudo leer el fichero subido")
 
-    # Convertir archivo a imágenes base64
-    if filename.endswith(".pdf"):
-        images_b64 = convert_pdf_to_images(content)
-    else:
-        images_b64 = [base64.b64encode(content).decode()]
+    # Marcadores de ejemplo (MVP)
+    markers: List[dict] = [
+        {"name": "Hemoglobina", "value": "13.8 g/dL", "range": "12.0–16.0", "status": "normal"},
+        {"name": "Leucocitos", "value": "9.8 x10^9/L", "range": "4.0–11.0", "status": "normal"},
+        {"name": "PCR", "value": "12 mg/L", "range": "0–5", "status": "elevado"},
+        {"name": "Creatinina", "value": "1.1 mg/dL", "range": "0.7–1.2", "status": "normal"},
+    ]
 
-    if not images_b64:
-        raise HTTPException(400, "No se pudo procesar la analítica.")
-
-    # Intentar crear cliente OpenAI
-    client = get_openai_client()
-
-    if client:
-        # IA Vision real
-        try:
-            summary, differential, markers = analyze_with_ai_vision(
-                client=client,
-                images_b64=images_b64,
-                patient_alias=patient.alias,
-                model="gpt-4o",
-                system_prompt=SYSTEM_PROMPT_GALENOS,
-            )
-        except Exception as e:
-            print("[OpenAI] Error llamando a Vision:", repr(e))
-            # Fallback si la llamada a IA falla
-            summary = (
-                "No se ha podido generar el resumen con IA en este momento. "
-                "Interpretar la analítica bajo el criterio clínico."
-            )
-            differential = ["Error temporal de IA, repetir más tarde."]
-            markers = []
-    else:
-        # Fallback si no tenemos cliente OpenAI
-        summary = (
-            "IA no disponible en este entorno. Esta es una respuesta de ejemplo. "
-            "Interprete la analítica bajo su criterio clínico."
-        )
-        differential = ["Posible alteración metabólica a valorar.", "Correlación clínica necesaria."]
-        markers = []
-
-    # Guardar en BD
-    analytic = crud.create_analytic(
-        db=db,
-        patient_id=patient.id,
-        summary=summary,
-        differential=differential,
-        file_path=None,
+    summary = (
+        f"Resumen orientativo para {alias}: se observan parámetros generales dentro de rango, "
+        "con una proteína C reactiva (PCR) discretamente elevada que podría sugerir un proceso "
+        "inflamatorio leve o en resolución. No se aprecian alteraciones graves en este MVP."
     )
 
-    if markers:
-        crud.add_markers_to_analytic(db, analytic.id, markers)
+    differential = (
+        "Diagnóstico diferencial orientativo (no vinculante): infección leve de vías respiratorias, "
+        "proceso inflamatorio inespecífico, reagudización de patología crónica leve. Este texto es "
+        "puramente informativo para apoyar la reflexión clínica."
+    )
 
-    # Recargar analítica con markers
-    analytics_for_patient = crud.get_analytics_for_patient(db, patient.id)
-    # La primera será la más reciente
-    full = next((a for a in analytics_for_patient if a.id == analytic.id), analytic)
+    disclaimer = (
+        "Galenos.pro no diagnostica ni prescribe. Esta salida es un apoyo orientativo para el médico. "
+        "La decisión clínica final corresponde siempre al facultativo responsable."
+    )
 
-    return full
+    return JSONResponse(
+        {
+            "patient_alias": alias,
+            "file_name": file.filename,
+            "markers": markers,
+            "summary": summary,
+            "differential": differential,
+            "disclaimer": disclaimer,
+        }
+    )
