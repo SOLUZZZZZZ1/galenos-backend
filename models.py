@@ -1,5 +1,3 @@
-# models.py — Modelos SQLAlchemy para Galenos.pro
-
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Text
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -136,3 +134,20 @@ class TimelineItem(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     patient = relationship("Patient", back_populates="timeline_items")
+
+
+# ===============================================
+# INVITATIONS (Invitaciones para médicos)
+# ===============================================
+class Invitation(Base):
+    __tablename__ = "invitations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token = Column(String, unique=True, index=True, nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)  # Ej: ahora + 30 días
+    max_uses = Column(Integer, default=1)
+    used_count = Column(Integer, default=0)
+
+    creator = relationship("User")

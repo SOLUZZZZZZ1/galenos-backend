@@ -1,5 +1,3 @@
-# app.py — Backend principal de Galenos.pro
-
 import os
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,8 +5,8 @@ from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
 from models import User
-from schemas import UserCreate, LoginRequest, TokenResponse, UserReturn
-from auth import register_user, login_user, get_current_user
+from schemas import UserCreate, LoginRequest, TokenResponse, UserReturn, RegisterWithInviteRequest
+from auth import register_user, login_user, get_current_user, create_invitation, register_user_with_invitation
 
 import patients
 import analytics
@@ -97,6 +95,26 @@ def auth_login(
 @app.get("/auth/me", response_model=UserReturn)
 def auth_me(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+# ======================================================
+# INVITACIONES (crear + registro desde invitación)
+# ======================================================
+@app.post("/auth/invitations/create")
+def auth_invitations_create(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return create_invitation(db, current_user)
+
+
+@app.post("/auth/register-from-invite", response_model=TokenResponse)
+def auth_register_from_invite(
+    data: RegisterWithInviteRequest,
+    db: Session = Depends(get_db)
+):
+    token_response = register_user_with_invitation(data, db)
+    return token_response
 
 
 # ======================================================
