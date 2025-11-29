@@ -145,3 +145,35 @@ class RegisterWithInviteRequest(BaseModel):
     password: str
     name: Optional[str] = None
     token: str
+
+
+# ===============================================
+# ACCESS REQUESTS
+# ===============================================
+class AccessRequestCreate(BaseModel):
+    name: str
+    email: EmailStr
+    country: str
+    city: str
+    speciality: Optional[str] = None
+    center: Optional[str] = None
+    phone: Optional[str] = None
+    how_heard: Optional[str] = None
+    message: Optional[str] = None
+
+
+class AccessRequestReturn(BaseModel):
+    id: int
+    name: str
+    email: EmailStr
+    country: str
+    city: str
+    speciality: Optional[str]
+    center: Optional[str]
+    phone: Optional[str]
+    how_heard: Optional[str]
+    message: Optional[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

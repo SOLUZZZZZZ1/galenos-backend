@@ -151,3 +151,22 @@ class Invitation(Base):
     used_count = Column(Integer, default=0)
 
     creator = relationship("User")
+
+
+# ===============================================
+# ACCESS REQUESTS (Solicitudes de acceso sin invitación)
+# ===============================================
+class AccessRequest(Base):
+    __tablename__ = "access_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=False, index=True)
+    country = Column(String, nullable=False)
+    city = Column(String, nullable=False)
+    speciality = Column(String, nullable=True)
+    center = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    how_heard = Column(String, nullable=True)
+    message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

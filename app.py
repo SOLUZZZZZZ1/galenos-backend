@@ -4,8 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
-from models import User
-from schemas import UserCreate, LoginRequest, TokenResponse, UserReturn, RegisterWithInviteRequest
+from models import User, AccessRequest
+from schemas import UserCreate, LoginRequest, TokenResponse, UserReturn, RegisterWithInviteRequest, AccessRequestCreate, AccessRequestReturn
 from auth import register_user, login_user, get_current_user, create_invitation, register_user_with_invitation
 
 import patients
@@ -115,6 +115,31 @@ def auth_register_from_invite(
 ):
     token_response = register_user_with_invitation(data, db)
     return token_response
+
+
+# ======================================================
+# SOLICITUDES DE ACCESO (sin invitación)
+# ======================================================
+@app.post("/access-requests", response_model=AccessRequestReturn)
+def create_access_request(
+    data: AccessRequestCreate,
+    db: Session = Depends(get_db)
+):
+    ar = AccessRequest(
+        name=data.name,
+        email=str(data.email),
+        country=data.country,
+        city=data.city,
+        speciality=data.speciality,
+        center=data.center,
+        phone=data.phone,
+        how_heard=data.how_heard,
+        message=data.message,
+    )
+    db.add(ar)
+    db.commit()
+    db.refresh(ar)
+    return ar
 
 
 # ======================================================
