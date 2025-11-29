@@ -9,13 +9,13 @@ import jwt  # PyJWT
 
 from sqlalchemy.orm import Session
 from database import get_db
-from models import User, Invitation, AccessRequest
+from models import User, Invitation  # 👈 solo lo que usamos aquí
 from schemas import (
     UserCreate,
     LoginRequest,
     TokenResponse,
     UserReturn,
-    RegisterWithInviteRequest
+    RegisterWithInviteRequest,
 )
 from secrets import token_urlsafe
 
@@ -51,7 +51,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
 
 
 # ======================================================
-# REGISTRO NORMAL (no lo usamos, pero se mantiene)
+# REGISTRO NORMAL (no lo usamos desde web, pero queda disponible)
 # ======================================================
 def register_user(user_data: UserCreate, db: Session):
     existing = db.query(User).filter(User.email == user_data.email).first()
@@ -63,7 +63,7 @@ def register_user(user_data: UserCreate, db: Session):
     user = User(
         email=user_data.email,
         password_hash=hashed,
-        name=user_data.name
+        name=user_data.name,
     )
     db.add(user)
     db.commit()
@@ -96,14 +96,13 @@ def login_user(login_data: LoginRequest, db: Session):
 # ======================================================
 def get_current_user(
     token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: str = payload.get("sub")
         if not user_id:
             raise Exception("Token sin usuario")
-
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -144,16 +143,20 @@ def create_invitation(db: Session, current_user: User):
 # REGISTRAR USUARIO DESDE INVITACIÓN
 # ======================================================
 def register_user_with_invitation(data: RegisterWithInviteRequest, db: Session):
+    # Buscar invitación
     invitation = db.query(Invitation).filter(Invitation.token == data.token).first()
     if not invitation:
         raise HTTPException(status_code=400, detail="Invitación no válida.")
 
+    # Comprobar caducidad
     if invitation.expires_at and invitation.expires_at < datetime.utcnow():
         raise HTTPException(status_code=400, detail="La invitación ha caducado.")
 
+    # Comprobar usos
     if invitation.used_count >= invitation.max_uses:
         raise HTTPException(status_code=400, detail="La invitación ya ha sido utilizada.")
 
+    # ¿Existe ya el correo?
     existing = db.query(User).filter(User.email == data.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="El correo ya está registrado.")
@@ -163,23 +166,23 @@ def register_user_with_invitation(data: RegisterWithInviteRequest, db: Session):
     user = User(
         email=data.email,
         password_hash=hashed,
-        name=data.name
+        name=data.name,
     )
     db.add(user)
 
+    # Actualizar invitación (sumar uso)
     invitation.used_count += 1
+
     db.commit()
     db.refresh(user)
 
+    # Generar token como en login
     access_token = create_access_token({"sub": str(user.id)})
     return TokenResponse(access_token=access_token)
 
 
 # ======================================================
-# REGISTER-MASTER (solo 1 ejecución)
-# ======================================================
-# ======================================================
-# REGISTER MASTER (solo 1 vez y luego bloqueado)
+# REGISTER MASTER (solo 1 vez y luego bloqueo)
 # ======================================================
 MASTER_LOCK_FILE = "master_lock.txt"
 
@@ -190,25 +193,33 @@ def register_master(db: Session, secret: str):
 
     # Si existe el lock, bloquear
     if os.path.exists(MASTER_LOCK_FILE):
-        raise HTTPException(status_code=403, detail="El usuario master ya existe y el endpoint está bloqueado.")
+        raise HTTPException(
+            status_code=403,
+            detail="El usuario master ya existe y el endpoint está bloqueado.",
+        )
 
-    # Truncado seguro para bcrypt
+    # Truncado seguro para bcrypt (por si acaso)
     raw_password = "galenos8354@"
     safe_password = raw_password.encode("utf-8")[:72].decode("utf-8", "ignore")
 
-    # Crear usuario master
+    # Crear usuario master si no existe
     existing = db.query(User).filter(User.email == "soluzziona@gmail.com").first()
     if not existing:
         user = User(
             email="soluzziona@gmail.com",
             password_hash=hash_password(safe_password),
-            name="Master"
+            name="Master",
         )
         db.add(user)
         db.commit()
 
-    # Crear lock
-    with open(MASTER_LOCK_FILE, "w") as f:
-        f.write("locked")
+    # Crear lock en disco para bloquear futuras ejecuciones
+    try:
+        with open(MASTER_LOCK_FILE, "w", encoding="utf-8") as f:
+            f.write("locked")
+    except Exception:
+        # Si por lo que sea no se puede escribir, no pasa nada grave:
+        # el usuario master ya está creado igualmente.
+        pass
 
     return {"ok": True, "message": "Usuario master creado correctamente."}
