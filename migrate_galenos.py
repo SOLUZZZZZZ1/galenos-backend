@@ -9,6 +9,7 @@
 # - imaging_patterns
 # - clinical_notes
 # - timeline_items
+# + Campos PRO para Stripe en users (is_pro, stripe_customer_id, stripe_subscription_id, trial_end)
 #
 # Uso:
 # 1) Incluir este router en app.py:
@@ -18,7 +19,7 @@
 # 2) Llamar al endpoint:
 #    POST /admin/migrate-galenos/init  con cabecera:  x-admin-token: TU_TOKEN
 #
-# 3) Se crearán las tablas si no existen (no borra nada).
+# 3) Se crearán las tablas si no existen y se añadirán las columnas PRO si faltan (no borra nada).
 
 import os
 from fastapi import APIRouter, Header, HTTPException
@@ -40,7 +41,7 @@ def _auth(x_admin_token: str | None):
 # SQL DE CREACIÓN DE TABLAS
 # ==============================
 
-SQL_USERS = """
+SQL_USERS = \"\"\"
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     email TEXT UNIQUE NOT NULL,
@@ -50,18 +51,18 @@ CREATE TABLE IF NOT EXISTS users (
     last_login TIMESTAMP NULL,
     is_active INTEGER DEFAULT 1
 );
-"""
+\"\"\"
 
-SQL_PATIENTS = """
+SQL_PATIENTS = \"\"\"
 CREATE TABLE IF NOT EXISTS patients (
     id SERIAL PRIMARY KEY,
     doctor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     alias TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT NOW()
 );
-"""
+\"\"\"
 
-SQL_ANALYTICS = """
+SQL_ANALYTICS = \"\"\"
 CREATE TABLE IF NOT EXISTS analytics (
     id SERIAL PRIMARY KEY,
     patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
@@ -70,9 +71,9 @@ CREATE TABLE IF NOT EXISTS analytics (
     file_path TEXT,
     created_at TIMESTAMP DEFAULT NOW()
 );
-"""
+\"\"\"
 
-SQL_ANALYTIC_MARKERS = """
+SQL_ANALYTIC_MARKERS = \"\"\"
 CREATE TABLE IF NOT EXISTS analytic_markers (
     id SERIAL PRIMARY KEY,
     analytic_id INTEGER NOT NULL REFERENCES analytics(id) ON DELETE CASCADE,
@@ -82,9 +83,9 @@ CREATE TABLE IF NOT EXISTS analytic_markers (
     ref_min DOUBLE PRECISION,
     ref_max DOUBLE PRECISION
 );
-"""
+\"\"\"
 
-SQL_IMAGING = """
+SQL_IMAGING = \"\"\"
 CREATE TABLE IF NOT EXISTS imaging (
     id SERIAL PRIMARY KEY,
     patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
@@ -94,17 +95,17 @@ CREATE TABLE IF NOT EXISTS imaging (
     file_path TEXT,
     created_at TIMESTAMP DEFAULT NOW()
 );
-"""
+\"\"\"
 
-SQL_IMAGING_PATTERNS = """
+SQL_IMAGING_PATTERNS = \"\"\"
 CREATE TABLE IF NOT EXISTS imaging_patterns (
     id SERIAL PRIMARY KEY,
     imaging_id INTEGER NOT NULL REFERENCES imaging(id) ON DELETE CASCADE,
     pattern_text TEXT NOT NULL
 );
-"""
+\"\"\"
 
-SQL_CLINICAL_NOTES = """
+SQL_CLINICAL_NOTES = \"\"\"
 CREATE TABLE IF NOT EXISTS clinical_notes (
     id SERIAL PRIMARY KEY,
     patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
@@ -113,9 +114,9 @@ CREATE TABLE IF NOT EXISTS clinical_notes (
     content TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT NOW()
 );
-"""
+\"\"\"
 
-SQL_TIMELINE_ITEMS = """
+SQL_TIMELINE_ITEMS = \"\"\"
 CREATE TABLE IF NOT EXISTS timeline_items (
     id SERIAL PRIMARY KEY,
     patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
@@ -123,9 +124,9 @@ CREATE TABLE IF NOT EXISTS timeline_items (
     item_id INTEGER NOT NULL,
     created_at TIMESTAMP DEFAULT NOW()
 );
-"""
+\"\"\"
 
-SQL_INDEXES = """
+SQL_INDEXES = \"\"\"
 -- Índices útiles
 CREATE INDEX IF NOT EXISTS idx_patients_doctor_id ON patients (doctor_id);
 CREATE INDEX IF NOT EXISTS idx_analytics_patient_id ON analytics (patient_id);
@@ -133,7 +134,15 @@ CREATE INDEX IF NOT EXISTS idx_markers_analytic_id ON analytic_markers (analytic
 CREATE INDEX IF NOT EXISTS idx_imaging_patient_id ON imaging (patient_id);
 CREATE INDEX IF NOT EXISTS idx_notes_patient_id ON clinical_notes (patient_id);
 CREATE INDEX IF NOT EXISTS idx_timeline_patient_id ON timeline_items (patient_id);
-"""
+\"\"\"
+
+# Campos PRO para Stripe en users
+SQL_USERS_STRIPE = \"\"\"
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_pro INTEGER DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_end TIMESTAMP;
+\"\"\"
 
 
 # ==============================
@@ -142,14 +151,15 @@ CREATE INDEX IF NOT EXISTS idx_timeline_patient_id ON timeline_items (patient_id
 
 @router.post("/init")
 def migrate_init(x_admin_token: str | None = Header(None)):
-    """
-    Crea todas las tablas de Galenos.pro si no existen.
+    \"\"\"
+    Crea todas las tablas de Galenos.pro si no existen y añade los campos PRO de Stripe en users.
     No borra ni modifica datos existentes.
-    """
+    \"\"\"
     _auth(x_admin_token)
 
     try:
         with engine.begin() as conn:
+            # Tablas base
             conn.execute(text(SQL_USERS))
             conn.execute(text(SQL_PATIENTS))
             conn.execute(text(SQL_ANALYTICS))
@@ -160,9 +170,12 @@ def migrate_init(x_admin_token: str | None = Header(None)):
             conn.execute(text(SQL_TIMELINE_ITEMS))
             conn.execute(text(SQL_INDEXES))
 
+            # Campos PRO (Stripe) en users
+            conn.execute(text(SQL_USERS_STRIPE))
+
         return {
             "status": "ok",
-            "message": "Tablas de Galenos creadas/aseguradas correctamente."
+            "message": "Tablas de Galenos y campos PRO creados/asegurados correctamente."
         }
     except Exception as e:
         raise HTTPException(500, f"Error en migración Galenos: {e}")
@@ -170,9 +183,9 @@ def migrate_init(x_admin_token: str | None = Header(None)):
 
 @router.get("/check")
 def migrate_check(x_admin_token: str | None = Header(None)):
-    """
+    \"\"\"
     Pequeña ruta para comprobar que el router admin responde.
     No ejecuta migraciones, solo sirve de 'ping' para admins.
-    """
+    \"\"\"
     _auth(x_admin_token)
     return {"status": "ok", "message": "migrate_galenos router activo."}
