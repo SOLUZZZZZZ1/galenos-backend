@@ -1,8 +1,28 @@
-# utils_vision.py — Lectura real de analíticas con GPT-4o Vision
+
+# utils_vision.py — Lectura real de analíticas con GPT-4o Vision (Optimizado)
 
 import json
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
+
 from openai import OpenAI
+
+
+def _ensure_list_of_str(value: Any) -> List[str]:
+    """Normaliza un campo que debería ser lista de strings.
+
+    Acepta:
+      - list[str]
+      - list[dict] (usa str(item))
+      - str (lo parte por punto y coma / salto de línea)
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str):
+        parts = [p.strip() for p in value.replace("\n", ";").split(";") if p.strip()]
+        return parts
+    return [str(value).strip()]
 
 
 def analyze_with_ai_vision(
@@ -11,50 +31,74 @@ def analyze_with_ai_vision(
     patient_alias: str,
     model: str,
     system_prompt: str = ""
-) -> Tuple[str, List[str], List[dict]]:
-    """
-    Envía 1+ imágenes base64 de una analítica a GPT-4o Vision.
+) -> Tuple[str, List[str], List[Dict[str, Any]]]:
+    """Envía 1+ imágenes base64 de una analítica a GPT-4o Vision.
+
     Devuelve:
       - summary (texto clínico orientativo)
-      - differential (lista de posibles causas a valorar)
-      - markers (lista de marcadores reales)
+      - differential (lista de posibles causas a valorar, como lista de strings)
+      - markers (lista de marcadores reales normalizados)
     """
 
-    # Construimos los inputs para Vision
+    if not images_b64:
+        return "", [], []
+
     vision_content = []
     for b64 in images_b64:
         vision_content.append({
             "type": "input_image",
-            "image_url": f"data:image/png;base64,{b64}"
+            "image_url": f"data:image/png;base64,{b64}",
         })
 
-    # Llamada a OpenAI
-    response = client.responses.create(
-        model=model,   # normalmente gpt-4o
-        input=[
-            {
-                "role": "system",
-                "content": [
-                    {"type": "input_text", "text": system_prompt}
-                ]
-            },
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": f"Analiza la analítica del paciente: {patient_alias}"},
-                    *vision_content
-                ]
-            }
-        ],
-        response_format={"type": "json_object"},
-    )
+    try:
+        response = client.responses.create(
+            model=model,
+            input=[
+                {
+                    "role": "system",
+                    "content": [
+                        {"type": "input_text", "text": system_prompt}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": f"Analiza detalladamente la analítica del paciente: {patient_alias}."
+                        },
+                        *vision_content,
+                    ],
+                },
+            ],
+            response_format={"type": "json_object"},
+        )
+    except Exception as e:
+        print("[Vision-Analytics] Error al llamar a OpenAI:", repr(e))
+        return "", [], []
 
-    # Extraer JSON
-    raw = response.output[0].content[0].text
-    data = json.loads(raw)
+    try:
+        raw = response.output[0].content[0].text
+    except Exception as e:
+        print("[Vision-Analytics] Error extrayendo texto de respuesta:", repr(e))
+        return "", [], []
 
-    summary = data.get("summary", "")
-    differential = data.get("differential", [])
-    markers = data.get("markers", [])
+    try:
+        data = json.loads(raw)
+    except Exception as e:
+        print("[Vision-Analytics] Error parseando JSON devuelto por IA:", repr(e))
+        return "", [], []
 
-    return summary, differential, markers
+    summary = str(data.get("summary", "") or "").strip()
+    differential_list = _ensure_list_of_str(data.get("differential", []))
+    markers = data.get("markers", []) or []
+
+    # Nos aseguramos de que markers sea una lista de dicts
+    normalized_markers: List[Dict[str, Any]] = []
+    for m in markers:
+        if isinstance(m, dict):
+            normalized_markers.append(m)
+        else:
+            normalized_markers.append({"name": str(m)})
+
+    return summary, differential_list, normalized_markers
