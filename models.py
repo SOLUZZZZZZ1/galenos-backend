@@ -18,6 +18,12 @@ class User(Base):
     last_login = Column(DateTime, nullable=True)
     is_active = Column(Integer, default=1)
 
+    # Campos PRO / Stripe
+    is_pro = Column(Integer, default=0)  # 0 = no PRO, 1 = PRO
+    stripe_customer_id = Column(String, nullable=True)
+    stripe_subscription_id = Column(String, nullable=True)
+    trial_end = Column(DateTime, nullable=True)
+
     patients = relationship("Patient", back_populates="doctor")
 
 

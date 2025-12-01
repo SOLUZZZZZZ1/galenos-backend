@@ -1,8 +1,15 @@
-# stripe_payments.py — Integración Stripe para Galenos.pro
+# stripe_payments.py — Integración Stripe para Galenos.pro (PRO real)
 import os
+from datetime import datetime
+
 import stripe
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
+
+from database import get_db
+from models import User
+from auth import get_current_user
 
 router = APIRouter(prefix="/billing", tags=["Billing"])
 
@@ -25,10 +32,11 @@ else:
 # Endpoint: crear sesión de Checkout (Galenos PRO)
 # ======================================================
 @router.get("/create-checkout-session")
-async def create_checkout_session():
+async def create_checkout_session(current_user: User = Depends(get_current_user)):
     """
     Crea una sesión de Checkout para Galenos PRO (10 €/mes, 3 días de prueba).
     Devuelve una URL de Stripe para redirigir al usuario.
+    El usuario debe estar autenticado: enlazamos la suscripción a su email.
     """
     if not STRIPE_SECRET_KEY or not STRIPE_PRICE_ID:
         raise HTTPException(
@@ -37,8 +45,7 @@ async def create_checkout_session():
         )
 
     try:
-        # Email demo por ahora; más adelante se puede sacar del usuario autenticado
-        fake_email = "doctor-demo@galenos.pro"
+        customer_email = current_user.email
 
         session = stripe.checkout.Session.create(
             mode="subscription",
@@ -54,8 +61,12 @@ async def create_checkout_session():
             },
             success_url=f"{FRONTEND_URL}/panel-medico?checkout=success",
             cancel_url=f"{FRONTEND_URL}/panel-medico?checkout=cancel",
-            customer_email=fake_email,
-            metadata={"app": "galenos.pro"},
+            customer_email=customer_email,
+            metadata={
+                "app": "galenos.pro",
+                "user_id": str(current_user.id),
+                "email": customer_email,
+            },
         )
 
         return {"checkout_url": session.url}
@@ -69,14 +80,31 @@ async def create_checkout_session():
 
 
 # ======================================================
+# Endpoint: estado de facturación (simple)
+# ======================================================
+@router.get("/status")
+def billing_status(current_user: User = Depends(get_current_user)):
+    """
+    Devuelve el estado PRO actual del usuario según la base de datos.
+    """
+    return {
+        "is_pro": bool(current_user.is_pro),
+        "stripe_customer_id": current_user.stripe_customer_id,
+        "stripe_subscription_id": current_user.stripe_subscription_id,
+        "trial_end": current_user.trial_end.isoformat() if current_user.trial_end else None,
+    }
+
+
+# ======================================================
 # Endpoint: webhook de Stripe
 # ======================================================
 @router.post("/webhook", include_in_schema=False)
-async def stripe_webhook(request: Request):
+async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     """
     Webhook de Stripe:
     - Verifica la firma con STRIPE_WEBHOOK_SECRET.
     - Maneja eventos importantes (de momento solo checkout.session.completed).
+    - Marca al médico como PRO en la base de datos.
     """
     if not STRIPE_WEBHOOK_SECRET:
         raise HTTPException(
@@ -98,27 +126,42 @@ async def stripe_webhook(request: Request):
         raise HTTPException(status_code=400, detail="Payload inválido")
     except stripe.error.SignatureVerificationError:
         # Firma inválida
-        raise HTTPException(status_code=400, detail="Firma inválida"
-
-        )
+        raise HTTPException(status_code=400, detail="Firma inválida")
 
     event_type = event.get("type")
     data_object = event.get("data", {}).get("object", {})
 
     if event_type == "checkout.session.completed":
         customer_email = (
-            (data_object.get("customer_details") or {}).get("email") or
-            data_object.get("customer_email")
+            (data_object.get("customer_details") or {}).get("email")
+            or data_object.get("customer_email")
         )
+        subscription_id = data_object.get("subscription")
+        customer_id = data_object.get("customer")
 
-        # TODO: aquí es donde puedes marcar al médico como PRO en la BD.
-        # 1. Buscar usuario por email en la tabla User.
-        # 2. Actualizar campo (ej: user.is_pro = True / user.plan = "PRO").
-        # 3. Guardar cambios.
-        #
-        # Lo dejamos como print para no tocar tu modelo actual.
         print(f"[Stripe] ✅ checkout.session.completed para {customer_email}")
 
-    # Aquí podrías manejar otros eventos: invoice.paid, customer.subscription.deleted, etc.
-    # De momento los ignoramos y solo confirmamos recepción.
+        # Obtenemos trial_end desde la suscripción (si existe)
+        trial_end_dt = None
+        if subscription_id:
+            try:
+                sub = stripe.Subscription.retrieve(subscription_id)
+                if sub.trial_end:
+                    trial_end_dt = datetime.utcfromtimestamp(sub.trial_end)
+            except Exception as e:
+                print("[Stripe] ⚠️ No se pudo obtener la suscripción para trial_end:", repr(e))
+
+        if customer_email:
+            user = db.query(User).filter(User.email == customer_email).first()
+            if user:
+                user.is_pro = 1
+                user.stripe_customer_id = customer_id
+                user.stripe_subscription_id = subscription_id
+                user.trial_end = trial_end_dt
+                db.commit()
+                print(f"[Stripe] 🔓 Usuario PRO activado en BD: {customer_email}")
+            else:
+                print(f"[Stripe] ⚠️ No se encontró usuario con email {customer_email}")
+
+    # Otros eventos se pueden manejar más adelante: invoice.paid, customer.subscription.deleted, etc.
     return JSONResponse({"received": True})
