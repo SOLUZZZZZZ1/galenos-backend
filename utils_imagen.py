@@ -1,5 +1,4 @@
-
-# utils_imagen.py — IA Vision para imágenes médicas (TAC / RM / RX / ECO) · Optimizado
+# utils_imagen.py — IA Vision para imágenes médicas (TAC / RM / RX / ECO) usando chat.completions
 
 import json
 from typing import List, Tuple, Any
@@ -25,7 +24,7 @@ def analyze_medical_image(
     system_prompt: str,
     extra_context: str | None = None,
 ) -> Tuple[str, List[str], List[str]]:
-    """Envía una imagen médica a GPT-4o Vision.
+    """Envía una imagen médica a GPT-4o Vision usando chat.completions.
 
     Devuelve:
       - summary: descripción orientativa prudente
@@ -36,33 +35,33 @@ def analyze_medical_image(
     if not image_b64:
         return "", [], []
 
-    vision_input = [
-        {
-            "type": "input_image",
-            "image_url": f"data:image/png;base64,{image_b64}",
-        }
-    ]
-
     user_text = "Analiza la siguiente imagen médica de forma prudente."
     if extra_context:
         user_text += f" Contexto adicional proporcionado por el médico: {extra_context}."
 
+    user_content: List[dict] = [
+        {"type": "text", "text": user_text},
+        {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/png;base64,{image_b64}",
+            },
+        },
+    ]
+
     try:
-        response = client.responses.create(
+        response = client.chat.completions.create(
             model=model,
-            input=[
+            messages=[
                 {
                     "role": "system",
                     "content": [
-                        {"type": "input_text", "text": system_prompt}
+                        {"type": "text", "text": system_prompt},
                     ],
                 },
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": user_text},
-                        *vision_input,
-                    ],
+                    "content": user_content,
                 },
             ],
             response_format={"type": "json_object"},
@@ -72,7 +71,11 @@ def analyze_medical_image(
         return "", [], []
 
     try:
-        raw = response.output[0].content[0].text
+        msg_content = response.choices[0].message.content
+        if isinstance(msg_content, list) and msg_content:
+            raw = msg_content[0].text
+        else:
+            raw = str(msg_content)
     except Exception as e:
         print("[Vision-Imaging] Error extrayendo texto de respuesta:", repr(e))
         return "", [], []
