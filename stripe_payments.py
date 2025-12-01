@@ -1,52 +1,62 @@
-# stripe_payments.py — Integración Stripe para Galenos.pro (PRO real)
+
+# stripe_payments.py — Integración Stripe para Galenos.pro (PRO real, sin exigir token en este endpoint)
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import stripe
-from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi import APIRouter, HTTPException, Request, Depends, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from database import get_db
 from models import User
-from auth import get_current_user
 
 router = APIRouter(prefix="/billing", tags=["Billing"])
 
 # ======================================================
 # Configuración Stripe desde variables de entorno
 # ======================================================
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")  # sk_test_... o sk_live_...
-STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID_GALENOS_PRO")  # price_...
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")  # whsec_...
-FRONTEND_URL = os.getenv("FRONTEND_URL", "https://frontend-galenos.vercel.app")
 
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://galenos.pro")
+TRIAL_DAYS = int(os.getenv("STRIPE_TRIAL_DAYS", "3"))
 
-if STRIPE_SECRET_KEY:
-    stripe.api_key = STRIPE_SECRET_KEY
+if not STRIPE_SECRET_KEY:
+    print("[Stripe] ⚠️ STRIPE_SECRET_KEY no configurada. El módulo de pagos no estará operativo.")
 else:
-    print("[Stripe] ⚠️ STRIPE_SECRET_KEY no está definida. Stripe no funcionará.")
+    stripe.api_key = STRIPE_SECRET_KEY
 
 
 # ======================================================
-# Endpoint: crear sesión de Checkout (Galenos PRO)
+# 1) Crear sesión de checkout (como ayer: SIN email obligatorio)
 # ======================================================
+
 @router.get("/create-checkout-session")
-async def create_checkout_session(current_user: User = Depends(get_current_user)):
+def create_checkout_session(
+    email: str | None = Query(
+        None,
+        description="Correo del médico (opcional; si no se envía, Stripe pedirá el email en el checkout)",
+    ),
+    db: Session = Depends(get_db),
+):
+    """Crea una sesión de checkout de Stripe para activar Galenos PRO.
+
+    - No exige token de autenticación (se puede llamar desde la landing).
+    - El parámetro `email` es OPCIONAL.
+    - Si no se envía correo, Stripe lo pedirá en el formulario de pago.
     """
-    Crea una sesión de Checkout para Galenos PRO (10 €/mes, 3 días de prueba).
-    Devuelve una URL de Stripe para redirigir al usuario.
-    El usuario debe estar autenticado: enlazamos la suscripción a su email.
-    """
+
     if not STRIPE_SECRET_KEY or not STRIPE_PRICE_ID:
         raise HTTPException(
             status_code=500,
             detail="Stripe no está configurado correctamente en el backend.",
         )
 
-    try:
-        customer_email = current_user.email
+    customer_email = email or None
 
+    try:
         session = stripe.checkout.Session.create(
             mode="subscription",
             line_items=[
@@ -55,113 +65,97 @@ async def create_checkout_session(current_user: User = Depends(get_current_user)
                     "quantity": 1,
                 }
             ],
-            allow_promotion_codes=True,
-            subscription_data={
-                "trial_period_days": 3,
-            },
-            success_url=f"{FRONTEND_URL}/panel-medico?checkout=success",
-            cancel_url=f"{FRONTEND_URL}/panel-medico?checkout=cancel",
+            payment_method_types=["card"],
             customer_email=customer_email,
-            metadata={
-                "app": "galenos.pro",
-                "user_id": str(current_user.id),
-                "email": customer_email,
+            subscription_data={
+                "trial_period_days": TRIAL_DAYS,
             },
+            success_url=f"{FRONTEND_URL}/panel-medico?status=success",
+            cancel_url=f"{FRONTEND_URL}/panel-medico?status=cancel",
         )
 
+        print(f"[Stripe] ✅ Sesión de checkout creada para {customer_email}")
         return {"checkout_url": session.url}
 
     except Exception as e:
-        print("[Stripe] Error creando sesión de checkout:", repr(e))
+        print(f"[Stripe] ❌ Error creando sesión de checkout: {e}")
         raise HTTPException(
             status_code=500,
-            detail="No se ha podido iniciar el pago en Stripe.",
+            detail="No se ha podido crear la sesión de pago en Stripe.",
         )
 
 
 # ======================================================
-# Endpoint: estado de facturación (simple)
+# 2) Webhook de Stripe
 # ======================================================
-@router.get("/status")
-def billing_status(current_user: User = Depends(get_current_user)):
-    """
-    Devuelve el estado PRO actual del usuario según la base de datos.
-    """
-    return {
-        "is_pro": bool(current_user.is_pro),
-        "stripe_customer_id": current_user.stripe_customer_id,
-        "stripe_subscription_id": current_user.stripe_subscription_id,
-        "trial_end": current_user.trial_end.isoformat() if current_user.trial_end else None,
-    }
 
-
-# ======================================================
-# Endpoint: webhook de Stripe
-# ======================================================
-@router.post("/webhook", include_in_schema=False)
+@router.post("/webhook")
 async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
-    """
-    Webhook de Stripe:
-    - Verifica la firma con STRIPE_WEBHOOK_SECRET.
-    - Maneja eventos importantes (de momento solo checkout.session.completed).
-    - Marca al médico como PRO en la base de datos.
+    """Webhook de Stripe para activar/cancelar Galenos PRO.
+
+    De momento solo procesamos `checkout.session.completed`, suficiente
+    para dejar al usuario en modo PRO después de completar el pago.
     """
     if not STRIPE_WEBHOOK_SECRET:
         raise HTTPException(
             status_code=500,
-            detail="Stripe webhook no está configurado en el backend.",
+            detail="El webhook de Stripe no está configurado en el backend.",
         )
 
     payload = await request.body()
-    sig_header = request.headers.get("stripe-signature", "")
+    sig_header = request.headers.get("stripe-signature")
 
     try:
         event = stripe.Webhook.construct_event(
-            payload=payload,
-            sig_header=sig_header,
-            secret=STRIPE_WEBHOOK_SECRET,
+            payload, sig_header, STRIPE_WEBHOOK_SECRET
         )
     except ValueError:
-        # Cuerpo inválido
-        raise HTTPException(status_code=400, detail="Payload inválido")
+        # Payload inválido
+        print("[Stripe] ❌ Payload inválido en webhook.")
+        raise HTTPException(status_code=400, detail="Invalid payload")
     except stripe.error.SignatureVerificationError:
-        # Firma inválida
-        raise HTTPException(status_code=400, detail="Firma inválida")
+        # Firma incorrecta
+        print("[Stripe] ❌ Firma inválida en webhook.")
+        raise HTTPException(status_code=400, detail="Invalid signature")
 
-    event_type = event.get("type")
-    data_object = event.get("data", {}).get("object", {})
+    event_type = event["type"]
+    print(f"[Stripe] 📩 Evento recibido: {event_type}")
 
+    # --------------------------------------------------
+    # Activación PRO tras completar el checkout
+    # --------------------------------------------------
     if event_type == "checkout.session.completed":
+        session_obj = event["data"]["object"]
+
         customer_email = (
-            (data_object.get("customer_details") or {}).get("email")
-            or data_object.get("customer_email")
-        )
-        subscription_id = data_object.get("subscription")
-        customer_id = data_object.get("customer")
+            session_obj.get("customer_details", {}) or {}
+        ).get("email")
+        subscription_id = session_obj.get("subscription")
+        customer_id = session_obj.get("customer")
 
-        print(f"[Stripe] ✅ checkout.session.completed para {customer_email}")
-
-        # Obtenemos trial_end desde la suscripción (si existe)
-        trial_end_dt = None
-        if subscription_id:
-            try:
-                sub = stripe.Subscription.retrieve(subscription_id)
-                if sub.trial_end:
-                    trial_end_dt = datetime.utcfromtimestamp(sub.trial_end)
-            except Exception as e:
-                print("[Stripe] ⚠️ No se pudo obtener la suscripción para trial_end:", repr(e))
+        # Por simplicidad, fijamos el trial_end a ahora + TRIAL_DAYS
+        trial_end_dt = datetime.utcnow() + timedelta(days=TRIAL_DAYS)
 
         if customer_email:
             user = db.query(User).filter(User.email == customer_email).first()
             if user:
                 user.is_pro = 1
-                user.stripe_customer_id = customer_id
-                user.stripe_subscription_id = subscription_id
+                user.stripe_customer_id = str(customer_id) if customer_id else None
+                user.stripe_subscription_id = (
+                    str(subscription_id) if subscription_id else None
+                )
                 user.trial_end = trial_end_dt
                 db.commit()
                 print(f"[Stripe] 🔓 Usuario PRO activado en BD: {customer_email}")
             else:
-                print(f"[Stripe] ⚠️ No se encontró usuario con email {customer_email}")
+                print(
+                    f"[Stripe] ⚠️ No se encontró usuario con email {customer_email}"
+                )
+        else:
+            print(
+                "[Stripe] ⚠️ checkout.session.completed recibido sin customer_email"
+            )
 
-    # Otros eventos se pueden manejar más adelante: invoice.paid, customer.subscription.deleted, etc.
+    # Aquí puedes manejar otros eventos (cancelaciones, etc.) más adelante
+
     return JSONResponse({"received": True})
