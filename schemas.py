@@ -43,9 +43,18 @@ class PatientBase(BaseModel):
 class PatientCreate(PatientBase):
     pass
 
+class PatientUpdate(BaseModel):
+    alias: Optional[str] = None
+    age: Optional[int] = None
+    gender: Optional[str] = None
+    notes: Optional[str] = None
+
 class PatientReturn(PatientBase):
     id: int
     created_at: datetime
+    age: Optional[int] = None
+    gender: Optional[str] = None
+    notes: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -134,11 +143,10 @@ class TimelineItemReturn(BaseModel):
 
 
 # ===============================================
-# INVITATIONS
+# INVITATIONS / ACCESS REQUESTS (por si ya los usas)
 # ===============================================
 class InvitationReturn(BaseModel):
     invite_url: str
-
 
 class RegisterWithInviteRequest(BaseModel):
     email: EmailStr
@@ -147,9 +155,6 @@ class RegisterWithInviteRequest(BaseModel):
     token: str
 
 
-# ===============================================
-# ACCESS REQUESTS
-# ===============================================
 class AccessRequestCreate(BaseModel):
     name: str
     email: EmailStr

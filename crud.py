@@ -1,7 +1,6 @@
 # crud.py — Lógica de base de datos (CRUD) para Galenos.pro
 
 from sqlalchemy.orm import Session
-from datetime import datetime
 import json
 
 from models import (
@@ -12,9 +11,9 @@ from models import (
     Imaging,
     ImagingPattern,
     ClinicalNote,
-    TimelineItem
+    TimelineItem,
 )
-from schemas import PatientCreate, ClinicalNoteCreate
+from schemas import PatientCreate, PatientUpdate, ClinicalNoteCreate
 
 
 # ===============================================
@@ -66,6 +65,22 @@ def get_patient_by_id(db: Session, patient_id: int, doctor_id: int):
         )
         .first()
     )
+
+
+def update_patient(db: Session, patient: Patient, data: PatientUpdate):
+    """Actualiza datos básicos del paciente (alias, edad, sexo, notas)."""
+    if data.alias is not None:
+        patient.alias = data.alias.strip()
+    if data.age is not None:
+        patient.age = data.age
+    if data.gender is not None:
+        patient.gender = data.gender.strip() if data.gender else None
+    if data.notes is not None:
+        patient.notes = data.notes.strip() if data.notes else None
+
+    db.commit()
+    db.refresh(patient)
+    return patient
 
 
 # ===============================================
@@ -148,7 +163,7 @@ def add_patterns_to_imaging(db: Session, imaging_id: int, patterns: list):
     for p in patterns:
         obj = ImagingPattern(
             imaging_id=imaging_id,
-            pattern_text=p
+            pattern_text=p if isinstance(p, str) else str(p)
         )
         db.add(obj)
     db.commit()
@@ -164,14 +179,14 @@ def get_imaging_for_patient(db: Session, patient_id: int):
 
 
 # ===============================================
-# NOTES (Notas clínicas)
+# CLINICAL NOTES
 # ===============================================
 def create_clinical_note(db: Session, patient_id: int, doctor_id: int, data: ClinicalNoteCreate):
     note = ClinicalNote(
         patient_id=patient_id,
         doctor_id=doctor_id,
-        title=data.title,
-        content=data.content
+        title=data.title.strip(),
+        content=data.content.strip()
     )
     db.add(note)
     db.commit()

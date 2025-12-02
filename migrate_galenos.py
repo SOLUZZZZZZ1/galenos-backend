@@ -62,6 +62,13 @@ CREATE TABLE IF NOT EXISTS patients (
 );
 """
 
+# Extensión de patients con campos clínicos básicos
+SQL_PATIENTS_EXTENDED = """
+ALTER TABLE patients ADD COLUMN IF NOT EXISTS age INTEGER;
+ALTER TABLE patients ADD COLUMN IF NOT EXISTS gender TEXT;
+ALTER TABLE patients ADD COLUMN IF NOT EXISTS notes TEXT;
+"""
+
 SQL_ANALYTICS = """
 CREATE TABLE IF NOT EXISTS analytics (
     id SERIAL PRIMARY KEY,
@@ -169,6 +176,9 @@ def migrate_init(x_admin_token: str | None = Header(None)):
             conn.execute(text(SQL_CLINICAL_NOTES))
             conn.execute(text(SQL_TIMELINE_ITEMS))
             conn.execute(text(SQL_INDEXES))
+
+            # Extender patients con campos clínicos
+            conn.execute(text(SQL_PATIENTS_EXTENDED))
 
             # Campos PRO (Stripe) en users
             conn.execute(text(SQL_USERS_STRIPE))

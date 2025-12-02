@@ -36,12 +36,15 @@ class Patient(Base):
     id = Column(Integer, primary_key=True, index=True)
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     alias = Column(String, nullable=False)
+    age = Column(Integer, nullable=True)
+    gender = Column(String, nullable=True)
+    notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     doctor = relationship("User", back_populates="patients")
     analytics = relationship("Analytic", back_populates="patient", cascade="all, delete")
     imaging = relationship("Imaging", back_populates="patient", cascade="all, delete")
-    notes = relationship("ClinicalNote", back_populates="patient", cascade="all, delete")
+    notes_rel = relationship("ClinicalNote", back_populates="patient", cascade="all, delete")
     timeline_items = relationship("TimelineItem", back_populates="patient", cascade="all, delete")
 
 
@@ -97,21 +100,18 @@ class Imaging(Base):
     patterns = relationship("ImagingPattern", back_populates="imaging", cascade="all, delete")
 
 
-# ===============================================
-# IMAGING PATTERNS (patrones visuales)
-# ===============================================
 class ImagingPattern(Base):
     __tablename__ = "imaging_patterns"
 
     id = Column(Integer, primary_key=True, index=True)
     imaging_id = Column(Integer, ForeignKey("imaging.id"), nullable=False)
-    pattern_text = Column(String, nullable=False)
+    pattern_text = Column(Text, nullable=False)
 
     imaging = relationship("Imaging", back_populates="patterns")
 
 
 # ===============================================
-# NOTES (Notas clínicas)
+# CLINICAL NOTES
 # ===============================================
 class ClinicalNote(Base):
     __tablename__ = "clinical_notes"
@@ -123,56 +123,19 @@ class ClinicalNote(Base):
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    patient = relationship("Patient", back_populates="notes")
-    doctor = relationship("User")
+    patient = relationship("Patient", back_populates="notes_rel")
 
 
 # ===============================================
-# TIMELINE (Historia clínica lineal)
+# TIMELINE
 # ===============================================
 class TimelineItem(Base):
     __tablename__ = "timeline_items"
 
     id = Column(Integer, primary_key=True, index=True)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
-    item_type = Column(String, nullable=False)  # "analytic", "imaging", "note"
+    item_type = Column(String, nullable=False)  # 'patient' | 'analytic' | 'imaging' | 'note'
     item_id = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     patient = relationship("Patient", back_populates="timeline_items")
-
-
-# ===============================================
-# INVITATIONS (Invitaciones para médicos)
-# ===============================================
-class Invitation(Base):
-    __tablename__ = "invitations"
-
-    id = Column(Integer, primary_key=True, index=True)
-    token = Column(String, unique=True, index=True, nullable=False)
-    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    expires_at = Column(DateTime, nullable=True)  # Ej: ahora + 30 días
-    max_uses = Column(Integer, default=1)
-    used_count = Column(Integer, default=0)
-
-    creator = relationship("User")
-
-
-# ===============================================
-# ACCESS REQUESTS (Solicitudes de acceso sin invitación)
-# ===============================================
-class AccessRequest(Base):
-    __tablename__ = "access_requests"
-
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)
-    email = Column(String, nullable=False, index=True)
-    country = Column(String, nullable=False)
-    city = Column(String, nullable=False)
-    speciality = Column(String, nullable=True)
-    center = Column(String, nullable=True)
-    phone = Column(String, nullable=True)
-    how_heard = Column(String, nullable=True)
-    message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
