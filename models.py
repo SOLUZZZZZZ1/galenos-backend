@@ -139,3 +139,22 @@ class TimelineItem(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     patient = relationship("Patient", back_populates="timeline_items")
+
+
+# ===============================================
+# ACCESS REQUEST (solicitudes de acceso)
+# ===============================================
+class AccessRequest(Base):
+    __tablename__ = "access_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=False)
+    country = Column(String, nullable=False)
+    city = Column(String, nullable=False)
+    speciality = Column(String, nullable=True)
+    center = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    how_heard = Column(String, nullable=True)
+    message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
