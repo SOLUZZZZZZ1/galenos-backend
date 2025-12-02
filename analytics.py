@@ -1,10 +1,10 @@
 # analytics.py — Analíticas · IA real (Vision) para Galenos.pro
 #
 # Incluye:
-# - /analytics/analyze        → IA "suelta" (no guarda en BD, modo sandbox)
-# - /analytics/upload/{id}    → IA + guarda en BD + timeline para un paciente
-# - /analytics/by-patient/{id}→ Lista analíticas históricas de un paciente
-# - /analytics/chat           → Mini‑chat clínico sobre una analítica
+# - /analytics/analyze         → IA "suelta" (no guarda en BD, modo sandbox)
+# - /analytics/upload/{id}     → IA + guarda en BD + timeline para un paciente
+# - /analytics/by-patient/{id} → Lista analíticas históricas de un paciente
+# - /analytics/chat            → Mini-chat clínico sobre una analítica
 
 import os
 from typing import List, Optional, Any, Dict
@@ -40,7 +40,7 @@ router = APIRouter(prefix="/analytics", tags=["Analytics"])
 # =============================
 
 class ChatRequest(BaseModel):
-    patient_alias: str
+    patient_alias: Optional[str] = None
     file_name: Optional[str] = None
     markers: Optional[List[Dict[str, Any]]] = None
     summary: Optional[str] = None
@@ -54,11 +54,7 @@ def _build_status_and_range(
     ref_max: Optional[float],
     unit: Optional[str],
 ) -> Dict[str, Optional[str]]:
-    """Construye campos 'range' y 'status' para compatibilidad con el frontend.
-
-    - range: texto tipo "12.0–16.0 g/dL"
-    - status: "bajo" | "normal" | "elevado" | None
-    """
+    """Construye campos 'range' y 'status' para compatibilidad con el frontend."""
     range_txt = None
     if ref_min is not None and ref_max is not None:
         if unit:
@@ -154,7 +150,7 @@ def _normalize_markers_for_front(markers_raw: List[Dict[str, Any]]) -> List[Dict
         else:
             try:
                 import re
-                match = re.search(r"[-+]?[0-9]*\.?[0-9]+", str(raw_value))
+                match = re.search(r"[-+]?[0-9]*\\.?[0-9]+", str(raw_value))
                 if match:
                     value_f = float(match.group())
             except Exception:
@@ -189,11 +185,9 @@ async def analyze_lab_with_ai(
     alias: str = Form(..., description="Alias del paciente"),
     file: UploadFile = File(..., description="Analítica en PDF o imagen"),
 ):
-    """Analiza una analítica (PDF/imagen) con IA (Vision) y devuelve resultado orientativo.
-
-    - Soporta PDF multipágina.
-    - Soporta imágenes (JPG/PNG, etc.).
-    - NO guarda en BD. Modo 'sandbox' para el médico.
+    """
+    Analiza una analítica (PDF/imagen) con IA (Vision) y devuelve resultado orientativo.
+    NO guarda en BD. Modo 'sandbox' para el médico.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="Fichero no válido")
@@ -210,7 +204,6 @@ async def analyze_lab_with_ai(
     summary, differential_list, markers_raw = _call_vision_analytics(alias, images_b64)
 
     differential_text = "; ".join(differential_list) if differential_list else ""
-
     markers = _normalize_markers_for_front(markers_raw or [])
 
     return {
@@ -234,11 +227,8 @@ async def upload_analytic_for_patient(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
-    """Analiza una analítica con IA y la guarda como histórico del paciente.
-
-    - Verifica que el paciente pertenece al médico.
-    - Llama a la misma IA que /analyze.
-    - Crea Analytic + marcadores + entrada en Timeline.
+    """
+    Analiza una analítica con IA y la guarda como histórico del paciente.
     """
     # 1) Comprobar paciente
     patient = crud.get_patient_by_id(db, patient_id, current_user.id)
@@ -275,7 +265,7 @@ async def upload_analytic_for_patient(
     if markers_raw:
         crud.add_markers_to_analytic(db=db, analytic_id=analytic.id, markers=markers_raw)
 
-    # 6) Devolver algo útil al frontend
+    # 6) Devolver al frontend
     markers_normalized = _normalize_markers_for_front(markers_raw or [])
 
     return {
@@ -309,7 +299,7 @@ def list_analytics_by_patient(
 
 
 # =====================================================
-# 4) /analytics/chat  (mini‑chat clínico)
+# 4) /analytics/chat  (mini-chat clínico)
 # =====================================================
 
 @router.post("/chat")
@@ -322,8 +312,8 @@ async def analytics_chat(
 
     alias = payload.patient_alias or "el paciente"
     base_summary = payload.summary or "una analítica previamente analizada en Galenos.pro."
-
     diff_txt = payload.differential or ""
+
     markers_txt = ""
     if payload.markers:
         try:
@@ -343,7 +333,7 @@ async def analytics_chat(
 
     user_text = (
         f"Paciente: {alias}. Resumen previo de la analítica: {base_summary}. "
-        f"Diagnóstico diferencial orientativo: {diff_txt}. {markers_txt} "
+        f"Diagnóstico diferencial orientativo: {diff_txt}.{markers_txt} "
         f"Pregunta del médico: {payload.question}"
     )
 
@@ -354,33 +344,24 @@ async def analytics_chat(
             detail="OPENAI_API_KEY no está configurada en el backend.",
         )
 
-    text_model = os.getenv("GALENOS_TEXT_MODEL", "gpt-4o-mini")
     client = OpenAI(api_key=api_key)
+    text_model = os.getenv("GALENOS_TEXT_MODEL", "gpt-4o-mini")
 
     try:
-        resp = client.responses.create(
+        # Usamos la API de chat clásica para máxima compatibilidad
+        resp = client.chat.completions.create(
             model=text_model,
-            input=[
-                {
-                    "role": "system",
-                    "content": [
-                        {"type": "input_text", "text": system_text}
-                    ],
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": user_text}
-                    ],
-                },
+            messages=[
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_text},
             ],
         )
-        answer = resp.output[0].content[0].text
+        answer = resp.choices[0].message.content
     except Exception as e:
         print("[Analytics-Chat] Error al llamar a OpenAI:", repr(e))
         raise HTTPException(
             status_code=500,
-            detail="No se ha podido generar la respuesta de apoyo clínico para la analítica.",
+            detail="No se ha podido generar la respuesta de apoyo clínico para la analítica."
         )
 
     disclaimer = (
