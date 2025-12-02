@@ -158,3 +158,16 @@ class AccessRequest(Base):
     how_heard = Column(String, nullable=True)
     message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ===============================================
+# INVITATIONS (invitaciones de acceso)
+# ===============================================
+class Invitation(Base):
+    __tablename__ = "invitations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, nullable=False)
+    token = Column(String, unique=True, index=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    used_at = Column(DateTime, nullable=True)
