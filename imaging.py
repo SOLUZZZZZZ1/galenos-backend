@@ -159,12 +159,6 @@ def list_imaging_by_patient(
 # ===========================================
 
 class ImagingChatRequest(BaseModel):
-    """Petición para el mini chat radiológico.
-
-    Se puede usar de dos formas:
-    - Con summary + patterns directamente (desde frontend).
-    - Opcionalmente podría ampliarse para usar imaging_id en el futuro.
-    """
     patient_alias: Optional[str] = None
     summary: Optional[str] = None
     patterns: Optional[List[str]] = None
@@ -189,20 +183,23 @@ async def imaging_chat(
 
     patterns_txt = ""
     if payload.patterns:
-        bullets = "; ".join([p for p in payload.patterns if p])
-        if bullets:
-            patterns_txt = f"Patrones descritos previamente: {bullets}."
+        try:
+            bullets = "; ".join([p for p in payload.patterns if p])
+            if bullets:
+                patterns_txt = f" Patrones descritos previamente: {bullets}."
+        except Exception:
+            patterns_txt = ""
 
     system_text = (
         "Eres un asistente clínico que ayuda a un médico a interpretar, de forma prudente, "
-        "una imagen médica ya analizada. No puedes ver la imagen ahora; solo conoces el resumen "
+        "una imagen médica YA analizada. No puedes ver la imagen ahora; solo conoces el resumen "
         "y los patrones descritos. NO debes diagnosticar ni prescribir. "
         "Tu función es ayudar a ordenar ideas y sugerir líneas de reflexión clínica general, "
         "recordando siempre que la interpretación final corresponde al radiólogo/médico responsable."
     )
 
     user_text = (
-        f"Paciente: {alias}. Resumen previo de la imagen: {base_summary}. "
+        f"Paciente: {alias}. Resumen previo de la imagen: {base_summary}."
         f"{patterns_txt} Pregunta del médico: {payload.question}"
     )
 
@@ -210,24 +207,15 @@ async def imaging_chat(
     text_model = os.getenv("GALENOS_TEXT_MODEL", "gpt-4o-mini")
 
     try:
-        resp = client.responses.create(
+        # Usamos la API de chat clásica, estable
+        resp = client.chat.completions.create(
             model=text_model,
-            input=[
-                {
-                    "role": "system",
-                    "content": [
-                        {"type": "input_text", "text": system_text}
-                    ],
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": user_text}
-                    ],
-                },
+            messages=[
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_text},
             ],
         )
-        answer = resp.output[0].content[0].text
+        answer = resp.choices[0].message.content
     except Exception as e:
         print("[Imaging-Chat] Error al llamar a OpenAI:", repr(e))
         raise HTTPException(
