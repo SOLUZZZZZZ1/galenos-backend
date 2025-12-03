@@ -7,6 +7,7 @@
 # - /analytics/chat            → Mini-chat clínico sobre una analítica
 
 import os
+import hashlib
 from typing import List, Optional, Any, Dict
 
 from fastapi import (
@@ -246,19 +247,69 @@ async def upload_analytic_for_patient(
     if not content:
         raise HTTPException(status_code=400, detail="El fichero está vacío")
 
+    # Calculamos hash SHA-256 del fichero para deduplicación
+    file_hash = hashlib.sha256(content).hexdigest()
+
     # 2) Preparar imágenes
     images_b64 = _prepare_images_from_file(file, content)
 
     # 3) Llamar a IA
     summary, differential_list, markers_raw = _call_vision_analytics(alias, images_b64)
 
+    # 4) Evitar analíticas duplicadas por hash
+    existing = crud.get_analytic_by_hash(db, patient_id, file_hash)
+    if existing:
+        # Recoger marcadores existentes desde la BD para devolverlos normalizados
+        markers_from_db = []
+        try:
+            for m in getattr(existing, "markers", []) or []:
+                markers_from_db.append({
+                    "name": getattr(m, "name", None),
+                    "value": getattr(m, "value", None),
+                    "unit": getattr(m, "unit", None),
+                    "ref_min": getattr(m, "ref_min", None),
+                    "ref_max": getattr(m, "ref_max", None),
+                })
+        except Exception:
+            markers_from_db = []
+
+        markers_normalized = _normalize_markers_for_front(markers_from_db)
+
+        # Intentamos reconstruir texto de diferencial
+        differential_text = ""
+        try:
+            diff_val = json.loads(existing.differential) if existing.differential else []
+            if isinstance(diff_val, list):
+                differential_text = "; ".join(str(d).strip() for d in diff_val if str(d).strip())
+            elif diff_val:
+                differential_text = str(diff_val).strip()
+        except Exception:
+            if existing.differential:
+                differential_text = str(existing.differential).strip()
+
+        return {
+            "id": existing.id,
+            "patient_id": patient_id,
+            "patient_alias": alias,
+            "file_name": file.filename,
+            "summary": existing.summary,
+            "differential": differential_text,
+            "markers": markers_normalized,
+            "created_at": existing.created_at,
+        }
+
     # 4) Guardar Analytic en BD (differential como lista/JSON)
+    # Usamos la primera imagen como previsualización (data URL PNG)
+    preview_b64 = images_b64[0] if images_b64 else None
+    file_path_preview = f"data:image/png;base64,{preview_b64}" if preview_b64 else None
+
     analytic = crud.create_analytic(
         db=db,
         patient_id=patient_id,
         summary=summary,
         differential=differential_list or [],
-        file_path=None,
+        file_path=file_path_preview,
+        file_hash=file_hash,
     )
 
     # 5) Guardar marcadores en BD
