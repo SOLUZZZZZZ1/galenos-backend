@@ -1,21 +1,9 @@
-# utils_vision.py — Lectura de analíticas con GPT-4o Vision usando chat.completions
+# utils_vision.py — Lectura de analíticas con GPT-4o Vision (CORREGIDO y OBLIGADO A JSON)
+# Autocontenido y robusto — Galenos.pro
 
 import json
 from typing import List, Tuple, Dict, Any
-
 from openai import OpenAI
-
-
-def _ensure_list_of_str(value: Any) -> List[str]:
-    """Normaliza un campo que debería ser lista de strings."""
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(v).strip() for v in value if str(v).strip()]
-    if isinstance(value, str):
-        parts = [p.strip() for p in value.replace("\n", ";").split(";") if p.strip()]
-        return parts
-    return [str(value).strip()]
 
 
 def analyze_with_ai_vision(
@@ -25,85 +13,97 @@ def analyze_with_ai_vision(
     model: str,
     system_prompt: str = ""
 ) -> Tuple[str, List[str], List[Dict[str, Any]]]:
-    """Envía 1+ imágenes base64 de una analítica a GPT-4o Vision.
-
-    Usa la API chat.completions (compatible con openai==1.37.2).
-
-    Devuelve:
-      - summary (texto clínico orientativo)
-      - differential (lista de posibles causas a valorar)
-      - markers (lista de marcadores reales normalizados)
+    """
+    Analiza una analítica con Vision y OBLIGA una salida JSON con:
+      - summary: str
+      - differential: [str]
+      - markers: [{ name, value, unit, ref_min, ref_max }]
     """
 
     if not images_b64:
         return "", [], []
 
-    # Construimos contenido multimodal: texto + 1..n imágenes
+    # 🔥 INSTRUCCIÓN CRÍTICA → obliga al modelo a devolver markers
+    system_text = (
+        "Eres un extractor clínico. Debes devolver SIEMPRE un JSON válido con este formato exacto:\n"
+        "{\n"
+        '  "summary": "texto breve en español",\n'
+        '  "differential": ["diagnóstico1", "diagnóstico2"],\n'
+        '  "markers": [\n'
+        "    {\n"
+        '      "name": "Creatinina",\n'
+        '      "value": 1.80,\n'
+        '      "unit": "mg/dL",\n'
+        '      "ref_min": 0.70,\n'
+        '      "ref_max": 1.30\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "OBLIGACIONES:\n"
+        "- Extrae TODOS los marcadores que aparezcan en la analítica (línea a línea).\n"
+        "- Extrae SIEMPRE: nombre, valor, unidad, rango mínimo, rango máximo.\n"
+        "- Si no hay un rango claro, ref_min/ref_max debe ser null.\n"
+        "- NO añadas nada fuera del JSON. NO añadas explicaciones. NO escribas texto libre.\n"
+    )
+
+    # Construimos el contenido (1 o varias páginas)
     user_content: List[Dict[str, Any]] = [
-        {
-            "type": "text",
-            "text": f"Analiza detalladamente la analítica del paciente: {patient_alias}.",
-        },
+        {"type": "text", "text": f"Analiza esta analítica del paciente {patient_alias} y extrae todos los valores."},
     ]
 
     for b64 in images_b64:
-        user_content.append(
+        user_content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{b64}"}
+        })
+
+    # 🔥 PEDIMOS JSON ESTRICTO
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
             {
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/png;base64,{b64}",
-                },
-            }
-        )
+                "role": "system",
+                "content": [
+                    {"type": "text", "text": system_text},
+                ],
+            },
+            {
+                "role": "user",
+                "content": user_content,
+            },
+        ],
+        response_format={"type": "json_object"},
+    )
 
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": [
-                        {"type": "text", "text": system_prompt},
-                    ],
-                },
-                {
-                    "role": "user",
-                    "content": user_content,
-                },
-            ],
-            response_format={"type": "json_object"},
-        )
-    except Exception as e:
-        print("[Vision-Analytics] Error al llamar a OpenAI:", repr(e))
-        return "", [], []
-
-    try:
-        # El contenido viene como lista de bloques; tomamos el primero
-        msg_content = response.choices[0].message.content
-        if isinstance(msg_content, list) and msg_content:
-            raw = msg_content[0].text
-        else:
-            # fallback por si viene como string plano
-            raw = str(msg_content)
-    except Exception as e:
-        print("[Vision-Analytics] Error extrayendo texto de respuesta:", repr(e))
-        return "", [], []
+    # Extraer contenido
+    msg_content = response.choices[0].message.content
+    if isinstance(msg_content, list) and msg_content:
+        raw = msg_content[0].text
+    else:
+        raw = str(msg_content)
 
     try:
         data = json.loads(raw)
     except Exception as e:
-        print("[Vision-Analytics] Error parseando JSON devuelto por IA:", repr(e))
+        print("[Vision-Analytics] ERROR PARSEANDO JSON:", e, raw)
         return "", [], []
 
+    # Normalización
     summary = str(data.get("summary", "") or "").strip()
-    differential_list = _ensure_list_of_str(data.get("differential", []))
+    differential_list = data.get("differential", []) or []
     markers = data.get("markers", []) or []
 
-    normalized_markers: List[Dict[str, Any]] = []
+    # Asegurar estructura
+    normalized_markers = []
     for m in markers:
-        if isinstance(m, dict):
-            normalized_markers.append(m)
-        else:
-            normalized_markers.append({"name": str(m)})
+        if not isinstance(m, dict):
+            continue
+        normalized_markers.append({
+            "name": m.get("name"),
+            "value": m.get("value"),
+            "unit": m.get("unit"),
+            "ref_min": m.get("ref_min"),
+            "ref_max": m.get("ref_max"),
+        })
 
     return summary, differential_list, normalized_markers
