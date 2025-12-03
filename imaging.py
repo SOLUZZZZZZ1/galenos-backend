@@ -36,8 +36,95 @@ def _get_openai_client() -> OpenAI:
     return OpenAI(api_key=api_key)
 
 
+def _prepare_single_image_b64(file: UploadFile, content: bytes) -> str:
+    """Convierte el fichero (PDF o imagen) en UNA imagen PNG base64."""
+    ct = (file.content_type or "").lower()
+    name_lower = (file.filename or "").lower()
+
+    img_b64: Optional[str] = None
+
+    if "pdf" in ct or name_lower.endswith(".pdf"):
+        images_b64 = convert_pdf_to_images(content, max_pages=10, dpi=200)
+        if not images_b64:
+            raise HTTPException(
+                status_code=400,
+                detail="No se han podido extraer imágenes legibles del PDF."
+            )
+        img_b64 = images_b64[0]
+    elif any(name_lower.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".bmp", ".tiff"]):
+        img_b64 = base64.b64encode(content).decode("utf-8")
+    else:
+        # Intentamos tratarlo como PDF por si acaso
+        images_b64 = convert_pdf_to_images(content, max_pages=5, dpi=200)
+        if images_b64:
+            img_b64 = images_b64[0]
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Formato de archivo no soportado para imagen médica."
+            )
+
+    if not img_b64:
+        raise HTTPException(
+            status_code=400,
+            detail="No se ha podido obtener una imagen válida del archivo."
+        )
+
+    return img_b64
+
+
 # ===========================================
-# 1) SUBIDA Y ANÁLISIS DE IMAGEN MÉDICA
+# 0) /imaging/analyze  → IA SUELTA (NO GUARDA)
+# ===========================================
+@router.post("/analyze")
+async def analyze_imaging_sandbox(
+    alias: str = Form("el paciente"),
+    img_type: str = Form("imagen"),
+    context: Optional[str] = Form(
+        None,
+        description="Contexto clínico opcional (tos, disnea, dolor, etc.)"
+    ),
+    file: UploadFile = File(..., description="Imagen médica o PDF con la imagen"),
+    current_user = Depends(get_current_user),
+):
+    """
+    Analiza una imagen médica con IA (Vision) y devuelve un resumen orientativo.
+    NO guarda nada en base de datos. Modo 'sandbox' para el médico.
+    """
+    try:
+        content = await file.read()
+    except Exception:
+        raise HTTPException(status_code=500, detail="No se pudo leer el fichero de imagen.")
+
+    if not content:
+        raise HTTPException(status_code=400, detail="El fichero está vacío.")
+
+    img_b64 = _prepare_single_image_b64(file, content)
+
+    client = _get_openai_client()
+    model = os.getenv("GALENOS_VISION_MODEL", "gpt-4o")
+
+    summary, differential_list, patterns = analyze_medical_image(
+        client=client,
+        image_b64=img_b64,
+        model=model,
+        system_prompt=SYSTEM_PROMPT_IMAGEN,
+        extra_context=context,
+    )
+
+    differential_text = "; ".join(differential_list) if differential_list else ""
+
+    return {
+        "patient_alias": alias,
+        "img_type": img_type,
+        "summary": summary,
+        "differential": differential_text,
+        "patterns": patterns or [],
+    }
+
+
+# ===========================================
+# 1) SUBIDA Y ANÁLISIS DE IMAGEN MÉDICA (GUARDAR EN BD)
 # ===========================================
 @router.post("/upload", response_model=ImagingReturn)
 async def upload_imaging(
@@ -52,13 +139,8 @@ async def upload_imaging(
     current_user = Depends(get_current_user),
 ):
     """
-    Sube una imagen médica (RX, TAC, RM, ECO, etc.) o PDF y la analiza con IA Vision.
-
-    - Verifica que el paciente pertenece al médico actual.
-    - Convierte PDF a imágenes si es necesario.
-    - Llama a GPT-4o Vision con un prompt clínico prudente.
-    - Guarda el resumen, el diferencial y los patrones en la BD.
-    - Además, guarda una data URL (PNG base64) en file_path para poder mostrar la imagen en Galenos.pro.
+    Sube una imagen médica (RX, TAC, RM, ECO, etc.) o PDF, la analiza con IA Vision
+    y la guarda como histórico del paciente (imaging + timeline).
     """
     patient = crud.get_patient_by_id(db, patient_id, current_user.id)
     if not patient:
@@ -72,46 +154,16 @@ async def upload_imaging(
     if not content:
         raise HTTPException(status_code=400, detail="El fichero está vacío.")
 
-    # Calculamos hash SHA-256 del fichero para deduplicación
+    # Hash SHA-256 para deduplicación
     file_hash = hashlib.sha256(content).hexdigest()
 
-    ct = (file.content_type or "").lower()
-    name_lower = (file.filename or "").lower()
-
-    img_b64: Optional[str] = None
-
-    try:
-        if "pdf" in ct or name_lower.endswith(".pdf"):
-            # PDF de TAC/RM/RX: convertimos a imágenes y usamos la primera página (representativa)
-            images_b64 = convert_pdf_to_images(content, max_pages=10, dpi=200)
-            if not images_b64:
-                raise HTTPException(
-                    status_code=400,
-                    detail="No se han podido extraer imágenes legibles del PDF."
-                )
-            img_b64 = images_b64[0]
-        elif any(name_lower.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".bmp", ".tiff"]):
-            img_b64 = base64.b64encode(content).decode("utf-8")
-        else:
-            # Intentamos tratarlo como PDF por si acaso
-            images_b64 = convert_pdf_to_images(content, max_pages=5, dpi=200)
-            if images_b64:
-                img_b64 = images_b64[0]
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Formato de archivo no soportado para imagen médica."
-                )
-    except HTTPException:
-        raise
-    except Exception as e:
-        print("[Imaging] Error preparando imagen para Vision:", repr(e))
-        raise HTTPException(status_code=500, detail="Error interno procesando la imagen.")
-
-    # Comprobamos si ya existe un estudio de imagen con el mismo hash para este paciente
+    # Si ya existe una imagen con este hash para este paciente, la reutilizamos
     existing = crud.get_imaging_by_hash(db, patient.id, file_hash)
     if existing:
         return existing
+
+    # Convertir a PNG base64
+    img_b64 = _prepare_single_image_b64(file, content)
 
     client = _get_openai_client()
     model = os.getenv("GALENOS_VISION_MODEL", "gpt-4o")
@@ -124,18 +176,11 @@ async def upload_imaging(
         extra_context=context,
     )
 
-    # differential_list es una lista de strings → la unimos en un texto breve
     differential_text = "; ".join(differential_list) if differential_list else ""
-
-    # Normalizamos img_type a algo corto y claro
     normalized_type = (img_type or "imagen").strip().upper()
 
-    # Construimos una data URL PNG para mostrar la imagen en el frontend.
-    file_path_data_url: Optional[str] = None
-    if img_b64:
-        file_path_data_url = f"data:image/png;base64,{img_b64}"
+    file_path_data_url: Optional[str] = f"data:image/png;base64,{img_b64}"
 
-    # Guardar en BD
     imaging = crud.create_imaging(
         db=db,
         patient_id=patient.id,
@@ -172,10 +217,10 @@ def list_imaging_by_patient(
 # 2) MINI CHAT CLÍNICO SOBRE IMAGEN MÉDICA
 # ===========================================
 class ImagingChatRequest(BaseModel):
-    patient_alias: Optional[str] = None
-    summary: Optional[str] = None
-    patterns: Optional[List[str]] = None
-    question: str
+  patient_alias: Optional[str] = None
+  summary: Optional[str] = None
+  patterns: Optional[List[str]] = None
+  question: str
 
 
 @router.post("/chat")
