@@ -338,12 +338,60 @@ def list_analytics_by_patient(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
-    """Devuelve todas las analíticas ligadas a un paciente concreto."""
+    """Devuelve todas las analíticas ligadas a un paciente concreto + marcadores normalizados."""
     patient = crud.get_patient_by_id(db, patient_id, current_user.id)
     if not patient:
         raise HTTPException(404, "Paciente no encontrado o no pertenece al usuario.")
 
-    return crud.get_analytics_for_patient(db, patient_id=patient_id)
+    rows = crud.get_analytics_for_patient(db, patient_id=patient_id)
+
+    results: List[Dict[str, Any]] = []
+    for analytic in rows:
+        # Recoger marcadores desde la BD
+        markers_raw: List[Dict[str, Any]] = []
+        try:
+            for m in getattr(analytic, "markers", []) or []:
+                markers_raw.append(
+                    {
+                        "name": getattr(m, "name", None),
+                        "value": getattr(m, "value", None),
+                        "unit": getattr(m, "unit", None),
+                        "ref_min": getattr(m, "ref_min", None),
+                        "ref_max": getattr(m, "ref_max", None),
+                    }
+                )
+        except Exception:
+            markers_raw = []
+
+        markers_normalized = _normalize_markers_for_front(markers_raw or [])
+
+        # Reconstruir texto de diferencial (guardado como JSON/string)
+        differential_text = None
+        try:
+            if analytic.differential:
+                diff_val = json.loads(analytic.differential)
+                if isinstance(diff_val, list):
+                    differential_text = "; ".join(
+                        str(d).strip() for d in diff_val if str(d).strip()
+                    )
+                else:
+                    differential_text = str(diff_val).strip()
+        except Exception:
+            if analytic.differential:
+                differential_text = str(analytic.differential).strip()
+
+        results.append(
+            {
+                "id": analytic.id,
+                "summary": analytic.summary,
+                "differential": differential_text,
+                "created_at": analytic.created_at,
+                "file_path": analytic.file_path,
+                "markers": markers_normalized,
+            }
+        )
+
+    return results
 
 
 # =====================================================

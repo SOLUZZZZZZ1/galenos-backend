@@ -9,9 +9,11 @@ from datetime import datetime
 class UserBase(BaseModel):
     email: EmailStr
 
+
 class UserCreate(UserBase):
     password: str
     name: Optional[str] = None
+
 
 class UserReturn(UserBase):
     id: int
@@ -29,6 +31,7 @@ class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -40,14 +43,17 @@ class TokenResponse(BaseModel):
 class PatientBase(BaseModel):
     alias: str
 
+
 class PatientCreate(PatientBase):
     pass
+
 
 class PatientUpdate(BaseModel):
     alias: Optional[str] = None
     age: Optional[int] = None
     gender: Optional[str] = None
     notes: Optional[str] = None
+
 
 class PatientReturn(PatientBase):
     id: int
@@ -69,6 +75,9 @@ class MarkerReturn(BaseModel):
     unit: Optional[str]
     ref_min: Optional[float]
     ref_max: Optional[float]
+    # NUEVOS CAMPOS PARA EL FRONTEND
+    range: Optional[str] = None
+    status: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -98,6 +107,7 @@ class ImagingPatternReturn(BaseModel):
     class Config:
         from_attributes = True
 
+
 class ImagingReturn(BaseModel):
     id: int
     type: Optional[str]
@@ -118,8 +128,10 @@ class ClinicalNoteBase(BaseModel):
     title: str
     content: str
 
+
 class ClinicalNoteCreate(ClinicalNoteBase):
     pass
+
 
 class ClinicalNoteReturn(ClinicalNoteBase):
     id: int
@@ -149,6 +161,7 @@ class TimelineItemReturn(BaseModel):
 # ===============================================
 class InvitationReturn(BaseModel):
     invite_url: str
+
 
 class RegisterWithInviteRequest(BaseModel):
     email: EmailStr
