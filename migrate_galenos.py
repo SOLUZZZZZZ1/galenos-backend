@@ -10,6 +10,8 @@
 # - clinical_notes
 # - timeline_items
 # + Campos PRO para Stripe en users (is_pro, stripe_customer_id, stripe_subscription_id, trial_end)
+# + Campos clínicos en patients (age, gender, notes)
+# + Campos file_hash en analytics e imaging
 #
 # Uso:
 # 1) En app.py:
@@ -19,7 +21,7 @@
 # 2) Llamar al endpoint:
 #    POST /admin/migrate-galenos/init  con cabecera:  x-admin-token: TU_TOKEN
 #
-# 3) Se crearán las tablas si no existen y se añadirán las columnas PRO si faltan (no borra datos).
+# 3) Se crearán las tablas si no existen y se añadirán las columnas extra si faltan (no borra datos).
 
 import os
 from fastapi import APIRouter, Header, HTTPException
@@ -151,6 +153,15 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_end TIMESTAMP;
 """
 
+# Campos extra para hashes de archivo
+SQL_ANALYTICS_EXTENDED = """
+ALTER TABLE analytics ADD COLUMN IF NOT EXISTS file_hash TEXT;
+"""
+
+SQL_IMAGING_EXTENDED = """
+ALTER TABLE imaging ADD COLUMN IF NOT EXISTS file_hash TEXT;
+"""
+
 
 # ==============================
 # ENDPOINTS DE MIGRACIÓN
@@ -159,8 +170,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_end TIMESTAMP;
 @router.post("/init")
 def migrate_init(x_admin_token: str | None = Header(None)):
     """
-    Crea todas las tablas de Galenos.pro si no existen y añade los campos PRO de Stripe en users.
-    No borra ni modifica datos existentes.
+    Crea todas las tablas de Galenos.pro si no existen y añade los campos extra
+    (clínicos, PRO de Stripe y hashes de archivo). No borra ni modifica datos existentes.
     """
     _auth(x_admin_token)
 
@@ -180,12 +191,16 @@ def migrate_init(x_admin_token: str | None = Header(None)):
             # Extender patients con campos clínicos
             conn.execute(text(SQL_PATIENTS_EXTENDED))
 
+            # Campos extra para archivos (hash)
+            conn.execute(text(SQL_ANALYTICS_EXTENDED))
+            conn.execute(text(SQL_IMAGING_EXTENDED))
+
             # Campos PRO (Stripe) en users
             conn.execute(text(SQL_USERS_STRIPE))
 
         return {
             "status": "ok",
-            "message": "Tablas de Galenos y campos PRO creados/asegurados correctamente."
+            "message": "Tablas de Galenos y campos extra (PRO + hashes) creados/asegurados correctamente."
         }
     except Exception as e:
         raise HTTPException(500, f"Error en migración Galenos: {e}")
