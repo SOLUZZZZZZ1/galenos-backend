@@ -8,6 +8,7 @@
 
 import os
 import hashlib
+import json
 from typing import List, Optional, Any, Dict
 
 from fastapi import (
@@ -39,7 +40,6 @@ router = APIRouter(prefix="/analytics", tags=["Analytics"])
 # =============================
 # MODELOS AUXILIARES
 # =============================
-
 class ChatRequest(BaseModel):
     patient_alias: Optional[str] = None
     file_name: Optional[str] = None
@@ -151,7 +151,7 @@ def _normalize_markers_for_front(markers_raw: List[Dict[str, Any]]) -> List[Dict
         else:
             try:
                 import re
-                match = re.search(r"[-+]?[0-9]*\\.?[0-9]+", str(raw_value))
+                match = re.search(r"[-+]?[0-9]*\.?[0-9]+", str(raw_value))
                 if match:
                     value_f = float(match.group())
             except Exception:
@@ -180,7 +180,6 @@ def _normalize_markers_for_front(markers_raw: List[Dict[str, Any]]) -> List[Dict
 # =====================================================
 # 1) /analytics/analyze  (IA SIN guardar en BD)
 # =====================================================
-
 @router.post("/analyze")
 async def analyze_lab_with_ai(
     alias: str = Form(..., description="Alias del paciente"),
@@ -219,7 +218,6 @@ async def analyze_lab_with_ai(
 # =====================================================
 # 2) /analytics/upload/{patient_id}  (IA + HISTÓRICO)
 # =====================================================
-
 @router.post("/upload/{patient_id}")
 async def upload_analytic_for_patient(
     patient_id: int,
@@ -260,7 +258,7 @@ async def upload_analytic_for_patient(
     existing = crud.get_analytic_by_hash(db, patient_id, file_hash)
     if existing:
         # Recoger marcadores existentes desde la BD para devolverlos normalizados
-        markers_from_db = []
+        markers_from_db: List[Dict[str, Any]] = []
         try:
             for m in getattr(existing, "markers", []) or []:
                 markers_from_db.append({
@@ -334,7 +332,6 @@ async def upload_analytic_for_patient(
 # =====================================================
 # 3) /analytics/by-patient/{id}  (LISTAR HISTÓRICO)
 # =====================================================
-
 @router.get("/by-patient/{patient_id}", response_model=list[AnalyticReturn])
 def list_analytics_by_patient(
     patient_id: int,
@@ -352,7 +349,6 @@ def list_analytics_by_patient(
 # =====================================================
 # 4) /analytics/chat  (mini-chat clínico)
 # =====================================================
-
 @router.post("/chat")
 async def analytics_chat(
     payload: ChatRequest,
@@ -399,7 +395,6 @@ async def analytics_chat(
     text_model = os.getenv("GALENOS_TEXT_MODEL", "gpt-4o-mini")
 
     try:
-        # Usamos la API de chat clásica para máxima compatibilidad
         resp = client.chat.completions.create(
             model=text_model,
             messages=[

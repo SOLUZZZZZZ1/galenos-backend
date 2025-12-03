@@ -83,6 +83,7 @@ class AnalyticReturn(BaseModel):
     differential: Optional[str]
     created_at: datetime
     markers: List[MarkerReturn]
+    file_path: Optional[str] = None  # miniatura (data URL PNG) para la analítica
 
     class Config:
         from_attributes = True
@@ -104,6 +105,7 @@ class ImagingReturn(BaseModel):
     differential: Optional[str]
     created_at: datetime
     patterns: List[ImagingPatternReturn]
+    file_path: Optional[str] = None  # miniatura (data URL PNG) para la imagen
 
     class Config:
         from_attributes = True
@@ -143,7 +145,7 @@ class TimelineItemReturn(BaseModel):
 
 
 # ===============================================
-# INVITATIONS / ACCESS REQUESTS (por si ya los usas)
+# INVITATIONS / ACCESS REQUESTS
 # ===============================================
 class InvitationReturn(BaseModel):
     invite_url: str

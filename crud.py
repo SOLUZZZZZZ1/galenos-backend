@@ -1,5 +1,3 @@
-# crud.py — Lógica de base de datos (CRUD) para Galenos.pro
-
 from sqlalchemy.orm import Session
 import json
 
@@ -86,12 +84,20 @@ def update_patient(db: Session, patient: Patient, data: PatientUpdate):
 # ===============================================
 # ANALÍTICAS
 # ===============================================
-def create_analytic(db: Session, patient_id: int, summary: str, differential, file_path: str = None):
+def create_analytic(
+    db: Session,
+    patient_id: int,
+    summary: str,
+    differential,
+    file_path: str | None = None,
+    file_hash: str | None = None,
+):
     analytic = Analytic(
         patient_id=patient_id,
         summary=summary,
         differential=json.dumps(differential),
-        file_path=file_path
+        file_path=file_path,
+        file_hash=file_hash,
     )
     db.add(analytic)
     db.commit()
@@ -132,16 +138,36 @@ def get_analytics_for_patient(db: Session, patient_id: int):
     )
 
 
+def get_analytic_by_hash(db: Session, patient_id: int, file_hash: str):
+    return (
+        db.query(Analytic)
+        .filter(
+            Analytic.patient_id == patient_id,
+            Analytic.file_hash == file_hash,
+        )
+        .first()
+    )
+
+
 # ===============================================
 # IMAGING (TAC / RM / RX)
 # ===============================================
-def create_imaging(db: Session, patient_id: int, img_type: str, summary: str, differential, file_path: str = None):
+def create_imaging(
+    db: Session,
+    patient_id: int,
+    img_type: str,
+    summary: str,
+    differential,
+    file_path: str | None = None,
+    file_hash: str | None = None,
+):
     imaging = Imaging(
         patient_id=patient_id,
         type=img_type,
         summary=summary,
         differential=json.dumps(differential),
-        file_path=file_path
+        file_path=file_path,
+        file_hash=file_hash,
     )
     db.add(imaging)
     db.commit()
@@ -175,6 +201,17 @@ def get_imaging_for_patient(db: Session, patient_id: int):
         .filter(Imaging.patient_id == patient_id)
         .order_by(Imaging.created_at.desc())
         .all()
+    )
+
+
+def get_imaging_by_hash(db: Session, patient_id: int, file_hash: str):
+    return (
+        db.query(Imaging)
+        .filter(
+            Imaging.patient_id == patient_id,
+            Imaging.file_hash == file_hash,
+        )
+        .first()
     )
 
 

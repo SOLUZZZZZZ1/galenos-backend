@@ -58,7 +58,8 @@ class Analytic(Base):
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     summary = Column(Text, nullable=True)
     differential = Column(Text, nullable=True)
-    file_path = Column(String, nullable=True)
+    file_path = Column(String, nullable=True)   # miniatura (data URL PNG) si existe
+    file_hash = Column(String, nullable=True)   # hash SHA-256 del archivo
     created_at = Column(DateTime, default=datetime.utcnow)
 
     patient = relationship("Patient", back_populates="analytics")
@@ -93,7 +94,8 @@ class Imaging(Base):
     type = Column(String, nullable=True)
     summary = Column(Text, nullable=True)
     differential = Column(Text, nullable=True)
-    file_path = Column(String, nullable=True)
+    file_path = Column(String, nullable=True)   # miniatura (data URL PNG)
+    file_hash = Column(String, nullable=True)   # hash SHA-256 del archivo original
     created_at = Column(DateTime, default=datetime.utcnow)
 
     patient = relationship("Patient", back_populates="imaging")
