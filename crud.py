@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
 import json
+from datetime import date
 
 from models import (
     User,
@@ -91,6 +92,7 @@ def create_analytic(
     differential,
     file_path: str | None = None,
     file_hash: str | None = None,
+    exam_date: date | None = None,
 ):
     analytic = Analytic(
         patient_id=patient_id,
@@ -98,6 +100,7 @@ def create_analytic(
         differential=json.dumps(differential),
         file_path=file_path,
         file_hash=file_hash,
+        exam_date=exam_date,
     )
     db.add(analytic)
     db.commit()
@@ -160,6 +163,7 @@ def create_imaging(
     differential,
     file_path: str | None = None,
     file_hash: str | None = None,
+    exam_date: date | None = None,
 ):
     imaging = Imaging(
         patient_id=patient_id,
@@ -168,6 +172,7 @@ def create_imaging(
         differential=json.dumps(differential),
         file_path=file_path,
         file_hash=file_hash,
+        exam_date=exam_date,
     )
     db.add(imaging)
     db.commit()
@@ -220,10 +225,10 @@ def get_imaging_by_hash(db: Session, patient_id: int, file_hash: str):
 # ===============================================
 def create_clinical_note(db: Session, patient_id: int, doctor_id: int, data: ClinicalNoteCreate):
     note = ClinicalNote(
-        patient_id=patient_id,
-        doctor_id=doctor_id,
-        title=data.title.strip(),
-        content=data.content.strip()
+      patient_id=patient_id,
+      doctor_id=doctor_id,
+      title=data.title.strip(),
+      content=data.content.strip()
     )
     db.add(note)
     db.commit()

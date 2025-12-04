@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Text
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Text, Date
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from database import Base
@@ -60,6 +60,7 @@ class Analytic(Base):
     differential = Column(Text, nullable=True)
     file_path = Column(String, nullable=True)   # miniatura (data URL PNG) si existe
     file_hash = Column(String, nullable=True)   # hash SHA-256 del archivo
+    exam_date = Column(Date, nullable=True)     # fecha clínica real de la analítica (solo día)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     patient = relationship("Patient", back_populates="analytics")
@@ -96,6 +97,7 @@ class Imaging(Base):
     differential = Column(Text, nullable=True)
     file_path = Column(String, nullable=True)   # miniatura (data URL PNG)
     file_hash = Column(String, nullable=True)   # hash SHA-256 del archivo original
+    exam_date = Column(Date, nullable=True)     # fecha clínica real del estudio (solo día)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     patient = relationship("Patient", back_populates="imaging")

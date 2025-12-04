@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, date
 
 
 # ===============================================
@@ -91,6 +91,7 @@ class AnalyticReturn(BaseModel):
     summary: Optional[str]
     differential: Optional[str]
     created_at: datetime
+    exam_date: Optional[date] = None
     markers: List[MarkerReturn]
     file_path: Optional[str] = None  # miniatura (data URL PNG) para la analítica
 
@@ -114,6 +115,7 @@ class ImagingReturn(BaseModel):
     summary: Optional[str]
     differential: Optional[str]
     created_at: datetime
+    exam_date: Optional[date] = None
     patterns: List[ImagingPatternReturn]
     file_path: Optional[str] = None  # miniatura (data URL PNG) para la imagen
 
