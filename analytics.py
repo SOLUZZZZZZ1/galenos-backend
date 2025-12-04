@@ -10,6 +10,7 @@ import os
 import hashlib
 import json
 from typing import List, Optional, Any, Dict
+from datetime import datetime, date
 
 from fastapi import (
     APIRouter,
@@ -177,6 +178,16 @@ def _normalize_markers_for_front(markers_raw: List[Dict[str, Any]]) -> List[Dict
     return markers
 
 
+def _parse_exam_date(exam_date_str: Optional[str]) -> Optional[date]:
+    """Convierte 'YYYY-MM-DD' en date, o None si viene vacío o mal."""
+    if not exam_date_str:
+        return None
+    try:
+        return datetime.strptime(exam_date_str.strip(), "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
 # =====================================================
 # 1) /analytics/analyze  (IA SIN guardar en BD)
 # =====================================================
@@ -223,11 +234,16 @@ async def upload_analytic_for_patient(
     patient_id: int,
     alias: str = Form(..., description="Alias del paciente para el prompt"),
     file: UploadFile = File(..., description="Analítica en PDF o imagen"),
+    exam_date: Optional[str] = Form(
+        None,
+        description="Fecha real de la analítica (YYYY-MM-DD, opcional)"
+    ),
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
     """
     Analiza una analítica con IA y la guarda como histórico del paciente.
+    exam_date = fecha real de la extracción/informe (si el médico la indica).
     """
     # 1) Comprobar paciente
     patient = crud.get_patient_by_id(db, patient_id, current_user.id)
@@ -247,6 +263,9 @@ async def upload_analytic_for_patient(
 
     # Calculamos hash SHA-256 del fichero para deduplicación
     file_hash = hashlib.sha256(content).hexdigest()
+
+    # Parsear exam_date (YYYY-MM-DD) a date
+    exam_date_value = _parse_exam_date(exam_date)
 
     # 2) Preparar imágenes
     images_b64 = _prepare_images_from_file(file, content)
@@ -294,6 +313,7 @@ async def upload_analytic_for_patient(
             "differential": differential_text,
             "markers": markers_normalized,
             "created_at": existing.created_at,
+            "exam_date": existing.exam_date,
         }
 
     # 4) Guardar Analytic en BD (differential como lista/JSON)
@@ -308,6 +328,7 @@ async def upload_analytic_for_patient(
         differential=differential_list or [],
         file_path=file_path_preview,
         file_hash=file_hash,
+        exam_date=exam_date_value,
     )
 
     # 5) Guardar marcadores en BD
@@ -326,6 +347,7 @@ async def upload_analytic_for_patient(
         "differential": "; ".join(differential_list) if differential_list else "",
         "markers": markers_normalized,
         "created_at": analytic.created_at,
+        "exam_date": analytic.exam_date,
     }
 
 
@@ -386,6 +408,7 @@ def list_analytics_by_patient(
                 "summary": analytic.summary,
                 "differential": differential_text,
                 "created_at": analytic.created_at,
+                "exam_date": analytic.exam_date,
                 "file_path": analytic.file_path,
                 "markers": markers_normalized,
             }

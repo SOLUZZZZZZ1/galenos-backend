@@ -1,6 +1,7 @@
 # imaging.py — Endpoints para TAC/RM/RX/ECO reales + mini chat radiológico · Galenos.pro
 
 from typing import Optional, List
+from datetime import datetime, date
 
 import os
 import base64
@@ -73,6 +74,16 @@ def _prepare_single_image_b64(file: UploadFile, content: bytes) -> str:
     return img_b64
 
 
+def _parse_exam_date(exam_date_str: Optional[str]) -> Optional[date]:
+    """Convierte 'YYYY-MM-DD' en date, o None si viene vacío o mal."""
+    if not exam_date_str:
+        return None
+    try:
+        return datetime.strptime(exam_date_str.strip(), "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
 # ===========================================
 # 0) /imaging/analyze  → IA SUELTA (NO GUARDA)
 # ===========================================
@@ -134,6 +145,10 @@ async def upload_imaging(
         None,
         description="Contexto clínico opcional (tos, disnea, dolor, tiempo de evolución, etc.)"
     ),
+    exam_date: Optional[str] = Form(
+        None,
+        description="Fecha real del estudio de imagen (YYYY-MM-DD, opcional)"
+    ),
     file: UploadFile = File(..., description="Imagen médica o PDF con la imagen"),
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
@@ -157,6 +172,9 @@ async def upload_imaging(
     # Hash SHA-256 para deduplicación
     file_hash = hashlib.sha256(content).hexdigest()
 
+    # Fecha clínica real
+    exam_date_value = _parse_exam_date(exam_date)
+
     # Si ya existe una imagen con este hash para este paciente, la reutilizamos
     existing = crud.get_imaging_by_hash(db, patient.id, file_hash)
     if existing:
@@ -176,7 +194,6 @@ async def upload_imaging(
         extra_context=context,
     )
 
-    differential_text = "; ".join(differential_list) if differential_list else ""
     normalized_type = (img_type or "imagen").strip().upper()
 
     file_path_data_url: Optional[str] = f"data:image/png;base64,{img_b64}"
@@ -186,9 +203,10 @@ async def upload_imaging(
         patient_id=patient.id,
         img_type=normalized_type,
         summary=summary,
-        differential=differential_text,
+        differential=differential_list or [],
         file_path=file_path_data_url,
         file_hash=file_hash,
+        exam_date=exam_date_value,
     )
 
     crud.add_patterns_to_imaging(db, imaging.id, patterns or [])
