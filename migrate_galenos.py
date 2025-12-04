@@ -12,6 +12,7 @@
 # + Campos PRO para Stripe en users (is_pro, stripe_customer_id, stripe_subscription_id, trial_end)
 # + Campos clínicos en patients (age, gender, notes)
 # + Campos file_hash en analytics e imaging
+# + Campos exam_date (DATE) en analytics e imaging
 #
 # Uso:
 # 1) En app.py:
@@ -162,6 +163,15 @@ SQL_IMAGING_EXTENDED = """
 ALTER TABLE imaging ADD COLUMN IF NOT EXISTS file_hash TEXT;
 """
 
+# Campos fecha clínica real
+SQL_ANALYTICS_EXAM_DATE = """
+ALTER TABLE analytics ADD COLUMN IF NOT EXISTS exam_date DATE;
+"""
+
+SQL_IMAGING_EXAM_DATE = """
+ALTER TABLE imaging ADD COLUMN IF NOT EXISTS exam_date DATE;
+"""
+
 
 # ==============================
 # ENDPOINTS DE MIGRACIÓN
@@ -171,7 +181,7 @@ ALTER TABLE imaging ADD COLUMN IF NOT EXISTS file_hash TEXT;
 def migrate_init(x_admin_token: str | None = Header(None)):
     """
     Crea todas las tablas de Galenos.pro si no existen y añade los campos extra
-    (clínicos, PRO de Stripe y hashes de archivo). No borra ni modifica datos existentes.
+    (clínicos, PRO de Stripe, hashes de archivo y exam_date). No borra ni modifica datos existentes.
     """
     _auth(x_admin_token)
 
@@ -195,12 +205,16 @@ def migrate_init(x_admin_token: str | None = Header(None)):
             conn.execute(text(SQL_ANALYTICS_EXTENDED))
             conn.execute(text(SQL_IMAGING_EXTENDED))
 
+            # Campos exam_date (fecha clínica)
+            conn.execute(text(SQL_ANALYTICS_EXAM_DATE))
+            conn.execute(text(SQL_IMAGING_EXAM_DATE))
+
             # Campos PRO (Stripe) en users
             conn.execute(text(SQL_USERS_STRIPE))
 
         return {
             "status": "ok",
-            "message": "Tablas de Galenos y campos extra (PRO + hashes) creados/asegurados correctamente."
+            "message": "Tablas de Galenos y campos extra (PRO + hashes + exam_date) creados/asegurados correctamente."
         }
     except Exception as e:
         raise HTTPException(500, f"Error en migración Galenos: {e}")
