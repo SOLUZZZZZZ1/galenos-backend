@@ -253,6 +253,10 @@ def create_clinical_note(
     db.commit()
     db.refresh(note)
 
+    # 🔓 DESCIFRAR SOLO PARA LA RESPUESTA (en BD sigue cifrado)
+    note.title = decrypt_text(note.title)
+    note.content = decrypt_text(note.content)
+
     # Timeline
     timeline = TimelineItem(
         patient_id=patient_id,
@@ -263,6 +267,7 @@ def create_clinical_note(
     db.commit()
 
     return note
+
 
 
 def get_notes_for_patient(db: Session, patient_id: int):
