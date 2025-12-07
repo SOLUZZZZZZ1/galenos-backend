@@ -12,7 +12,7 @@ from schemas import (
     UserReturn,
     RegisterWithInviteRequest,
     AccessRequestCreate,
-    AccessRequestReturn
+    AccessRequestReturn,
 )
 from auth import (
     register_user,
@@ -20,7 +20,7 @@ from auth import (
     get_current_user,
     create_invitation,
     register_user_with_invitation,
-    register_master
+    register_master,
 )
 
 import patients
@@ -30,7 +30,7 @@ import notes
 import timeline
 import stripe_payments
 import migrate_galenos
-import doctor_profile  # 🔹 nuevo router de perfil médico
+import doctor_profile
 
 
 # ======================================================
@@ -38,6 +38,7 @@ import doctor_profile  # 🔹 nuevo router de perfil médico
 # ======================================================
 def init_db():
     Base.metadata.create_all(bind=engine)
+
 
 init_db()
 
@@ -48,7 +49,7 @@ init_db()
 app = FastAPI(
     title="Galenos.pro API",
     version="1.0.0",
-    description="Backend clínico con IA."
+    description="Backend clínico con IA.",
 )
 
 
@@ -98,7 +99,7 @@ def auth_me(current_user: User = Depends(get_current_user)):
 @app.post("/auth/invitations/create")
 def auth_create_invite(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
     return create_invitation(db, current_user)
 
@@ -106,7 +107,7 @@ def auth_create_invite(
 @app.post("/auth/register-from-invite", response_model=TokenResponse)
 def auth_register_from_invite(
     data: RegisterWithInviteRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     return register_user_with_invitation(data, db)
 
@@ -117,7 +118,7 @@ def auth_register_from_invite(
 @app.get("/auth/register-master")
 def auth_register_master(
     secret: str = Query(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     return register_master(db, secret)
 
@@ -125,4 +126,36 @@ def auth_register_master(
 # ======================================================
 # ACCESS REQUESTS
 # ======================================================
-@app.post("/access-requests", response_model=Acce_
+@app.post("/access-requests", response_model=AccessRequestReturn)
+def create_access_request(
+    data: AccessRequestCreate,
+    db: Session = Depends(get_db),
+):
+    ar = AccessRequest(
+        name=data.name,
+        email=data.email,
+        country=data.country,
+        city=data.city,
+        speciality=data.speciality,
+        center=data.center,
+        phone=data.phone,
+        how_heard=data.how_heard,
+        message=data.message,
+    )
+    db.add(ar)
+    db.commit()
+    db.refresh(ar)
+    return ar
+
+
+# ======================================================
+# INCLUDE ROUTERS
+# ======================================================
+app.include_router(patients.router)
+app.include_router(analytics.router)
+app.include_router(imaging.router)
+app.include_router(notes.router)
+app.include_router(timeline.router)
+app.include_router(stripe_payments.router)
+app.include_router(migrate_galenos.router)
+app.include_router(doctor_profile.router)
