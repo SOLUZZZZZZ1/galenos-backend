@@ -3,9 +3,12 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 from database import Base
 
+# =========================
 # USER
+# =========================
 class User(Base):
     __tablename__ = "users"
+
     id = Column(Integer, primary_key=True)
     email = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
@@ -24,14 +27,17 @@ class User(Base):
     patients = relationship("Patient", back_populates="doctor")
     cancellations = relationship("CancellationReason", back_populates="user")
 
-    # 🔹 Perfil médico (1-1)
+    # 🔹 Relación 1-1 con perfil médico
     doctor_profile = relationship(
         "DoctorProfile",
         back_populates="user",
         uselist=False
     )
 
+
+# =========================
 # PERFIL MÉDICO
+# =========================
 class DoctorProfile(Base):
     __tablename__ = "doctor_profiles"
 
@@ -43,15 +49,19 @@ class DoctorProfile(Base):
     specialty = Column(String(120))
     colegiado_number = Column(String(50))
     phone = Column(String(30))
-    center = Column(String(150))  # hospital/centro de trabajo
+    center = Column(String(150))   # hospital/centro de trabajo
     city = Column(String(120))
-    bio = Column(Text)            # breve descripción / presentación
+    bio = Column(Text)             # breve descripción / presentación
 
     user = relationship("User", back_populates="doctor_profile")
 
+
+# =========================
 # PATIENT
+# =========================
 class Patient(Base):
     __tablename__ = "patients"
+
     id = Column(Integer, primary_key=True)
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     alias = Column(String, nullable=False)
@@ -66,9 +76,13 @@ class Patient(Base):
     notes_rel = relationship("ClinicalNote", back_populates="patient", cascade="all, delete")
     timeline_items = relationship("TimelineItem", back_populates="patient", cascade="all, delete")
 
+
+# =========================
 # ANALYTICS
+# =========================
 class Analytic(Base):
     __tablename__ = "analytics"
+
     id = Column(Integer, primary_key=True)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     summary = Column(Text)
@@ -81,8 +95,10 @@ class Analytic(Base):
     patient = relationship("Patient", back_populates="analytics")
     markers = relationship("AnalyticMarker", back_populates="analytic", cascade="all, delete")
 
+
 class AnalyticMarker(Base):
     __tablename__ = "analytic_markers"
+
     id = Column(Integer, primary_key=True)
     analytic_id = Column(Integer, ForeignKey("analytics.id"), nullable=False)
     name = Column(String, nullable=False)
@@ -93,9 +109,13 @@ class AnalyticMarker(Base):
 
     analytic = relationship("Analytic", back_populates="markers")
 
+
+# =========================
 # IMAGING
+# =========================
 class Imaging(Base):
     __tablename__ = "imaging"
+
     id = Column(Integer, primary_key=True)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     type = Column(String)
@@ -109,38 +129,54 @@ class Imaging(Base):
     patient = relationship("Patient", back_populates="imaging")
     patterns = relationship("ImagingPattern", back_populates="imaging", cascade="all, delete")
 
+
 class ImagingPattern(Base):
     __tablename__ = "imaging_patterns"
+
     id = Column(Integer, primary_key=True)
     imaging_id = Column(Integer, ForeignKey("imaging.id"), nullable=False)
     pattern_text = Column(Text)
+
     imaging = relationship("Imaging", back_populates="patterns")
 
-# NOTES
+
+# =========================
+# CLINICAL NOTES
+# =========================
 class ClinicalNote(Base):
     __tablename__ = "clinical_notes"
+
     id = Column(Integer, primary_key=True)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    title = Column(String, nullable=False)
+    title = Column(Text, nullable=False)
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     patient = relationship("Patient", back_populates="notes_rel")
 
+
+# =========================
 # TIMELINE
+# =========================
 class TimelineItem(Base):
     __tablename__ = "timeline_items"
+
     id = Column(Integer, primary_key=True)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     item_type = Column(String, nullable=False)
     item_id = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
     patient = relationship("Patient", back_populates="timeline_items")
 
-# CANCELACIÓN
+
+# =========================
+# MOTIVOS DE CANCELACIÓN
+# =========================
 class CancellationReason(Base):
     __tablename__ = "cancellation_reasons"
+
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     reason_category = Column(String)
@@ -148,3 +184,22 @@ class CancellationReason(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="cancellations")
+
+
+# =========================
+# ACCESS REQUEST (FORMULARIO LEADS)
+# =========================
+class AccessRequest(Base):
+    __tablename__ = "access_requests"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=False)
+    country = Column(String, nullable=False)
+    city = Column(String, nullable=False)
+    speciality = Column(String)
+    center = Column(String)
+    phone = Column(String)
+    how_heard = Column(String)
+    message = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
