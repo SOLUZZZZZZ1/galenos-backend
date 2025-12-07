@@ -11,8 +11,15 @@ from models import (
     ImagingPattern,
     ClinicalNote,
     TimelineItem,
+    DoctorProfile,
 )
-from schemas import PatientCreate, PatientUpdate, ClinicalNoteCreate
+from schemas import (
+    PatientCreate,
+    PatientUpdate,
+    ClinicalNoteCreate,
+    DoctorProfileCreate,
+    DoctorProfileUpdate,
+)
 
 # 🔐 Cifrado de texto
 from security_crypto import encrypt_text, decrypt_text
@@ -269,7 +276,6 @@ def create_clinical_note(
     return note
 
 
-
 def get_notes_for_patient(db: Session, patient_id: int):
     notes = (
         db.query(ClinicalNote)
@@ -296,3 +302,41 @@ def get_timeline_for_patient(db: Session, patient_id: int):
         .order_by(TimelineItem.created_at.desc())
         .all()
     )
+
+
+# ===============================================
+# DOCTOR PROFILE
+# ===============================================
+def get_doctor_profile_by_user(db: Session, user_id: int):
+    return (
+        db.query(DoctorProfile)
+        .filter(DoctorProfile.user_id == user_id)
+        .first()
+    )
+
+
+def create_doctor_profile(db: Session, user: User, data: DoctorProfileCreate):
+    profile = DoctorProfile(
+        user_id=user.id,
+        first_name=data.first_name,
+        last_name=data.last_name,
+        specialty=data.specialty,
+        colegiado_number=data.colegiado_number,
+        phone=data.phone,
+        center=data.center,
+        city=data.city,
+        bio=data.bio,
+    )
+    db.add(profile)
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+def update_doctor_profile(db: Session, profile: DoctorProfile, data: DoctorProfileUpdate):
+    for field, value in data.dict(exclude_unset=True).items():
+        setattr(profile, field, value)
+
+    db.commit()
+    db.refresh(profile)
+    return profile

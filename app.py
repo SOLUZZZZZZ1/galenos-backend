@@ -30,6 +30,7 @@ import notes
 import timeline
 import stripe_payments
 import migrate_galenos
+import doctor_profile  # 🔹 nuevo router de perfil médico
 
 
 # ======================================================
@@ -124,32 +125,4 @@ def auth_register_master(
 # ======================================================
 # ACCESS REQUESTS
 # ======================================================
-@app.post("/access-requests", response_model=AccessRequestReturn)
-def create_access_request(data: AccessRequestCreate, db: Session = Depends(get_db)):
-    ar = AccessRequest(
-        name=data.name,
-        email=data.email,
-        country=data.country,
-        city=data.city,
-        speciality=data.speciality,
-        center=data.center,
-        phone=data.phone,
-        how_heard=data.how_heard,
-        message=data.message,
-    )
-    db.add(ar)
-    db.commit()
-    db.refresh(ar)
-    return ar
-
-
-# ======================================================
-# INCLUDE ROUTERS
-# ======================================================
-app.include_router(patients.router)
-app.include_router(analytics.router)
-app.include_router(imaging.router)
-app.include_router(notes.router)
-app.include_router(timeline.router)
-app.include_router(stripe_payments.router)
-app.include_router(migrate_galenos.router)
+@app.post("/access-requests", response_model=Acce_

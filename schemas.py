@@ -199,3 +199,34 @@ class AccessRequestReturn(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ===============================================
+# DOCTOR PROFILE (Perfil Médico)
+# ===============================================
+class DoctorProfileBase(BaseModel):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    specialty: Optional[str] = None
+    colegiado_number: Optional[str] = None
+    phone: Optional[str] = None
+    center: Optional[str] = None
+    city: Optional[str] = None
+    bio: Optional[str] = None
+
+
+class DoctorProfileCreate(DoctorProfileBase):
+    pass
+
+
+class DoctorProfileUpdate(DoctorProfileBase):
+    pass
+
+
+class DoctorProfileReturn(DoctorProfileBase):
+    id: int
+    user_id: int
+    email: EmailStr
+
+    class Config:
+        from_attributes = True
