@@ -13,14 +13,46 @@ router = APIRouter(prefix="/billing", tags=["Billing"])
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://galenos.pro")
 
-# --------------------------
-# 1) CREAR CHECKOUT
-# --------------------------
+# --------------------------------------------------------
+# 1A) CREAR CHECKOUT — USO PÚBLICO (LANDING, SIN LOGIN)
+# --------------------------------------------------------
 @router.get("/create-checkout-session")
-def create_checkout_session(
+def create_checkout_session_public():
+    """
+    Endpoint original, SIN autenticación.
+    Lo usa la landing para enviar a Stripe directamente.
+    No mira perfil médico ni usuario.
+    """
+    try:
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            success_url=f"{FRONTEND_URL}/pro?success=true",
+            cancel_url=f"{FRONTEND_URL}/pro?canceled=true",
+            line_items=[{
+                "price": os.getenv("STRIPE_PRICE_ID"),
+                "quantity": 1
+            }],
+            subscription_data={"trial_period_days": 3},
+        )
+        return {"checkout_url": session.url}
+    except Exception as e:
+        raise HTTPException(500, f"Stripe error: {e}")
+
+
+# --------------------------------------------------------
+# 1B) CREAR CHECKOUT — USO APP (MÉDICO LOGUEADO + PERFIL)
+# --------------------------------------------------------
+@router.get("/create-checkout-session-auth")
+def create_checkout_session_auth(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
+    """
+    Endpoint PROTEGIDO para la app Galenos.
+    Solo deja pasar a Stripe si el médico:
+      - Está autenticado
+      - Tiene Perfil Médico creado
+    """
     # 1) Bloquear si NO hay perfil médico
     profile = crud.get_doctor_profile_by_user(db, current_user.id)
     if not profile:
