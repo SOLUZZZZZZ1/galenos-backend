@@ -88,9 +88,22 @@ def auth_login(data: LoginRequest, db: Session = Depends(get_db)):
     return login_user(data, db)
 
 
-@app.get("/auth/me", response_model=UserReturn)
+# 👇 AQUÍ EL CAMBIO IMPORTANTE
+@app.get("/auth/me")
 def auth_me(current_user: User = Depends(get_current_user)):
-    return current_user
+    """
+    Devuelve la info básica del usuario, incluyendo is_pro
+    para que el frontend sepa si debe mostrar el panel PRO completo.
+    """
+    return {
+        "id": current_user.id,
+        "email": current_user.email,
+        "name": current_user.name,
+        "created_at": current_user.created_at,
+        "is_pro": bool(getattr(current_user, "is_pro", 0)),
+        "stripe_subscription_id": getattr(current_user, "stripe_subscription_id", None),
+        "trial_end": getattr(current_user, "trial_end", None),
+    }
 
 
 # ======================================================
