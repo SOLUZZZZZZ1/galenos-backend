@@ -3,6 +3,7 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 from database import Base
 
+
 # =========================
 # USER
 # =========================
@@ -27,11 +28,18 @@ class User(Base):
     patients = relationship("Patient", back_populates="doctor")
     cancellations = relationship("CancellationReason", back_populates="user")
 
-    # 🔹 Relación 1-1 con perfil médico
+    # 🔹 Perfil médico 1-1
     doctor_profile = relationship(
         "DoctorProfile",
         back_populates="user",
-        uselist=False
+        uselist=False,
+    )
+
+    # 🔹 Invitaciones creadas por este usuario (opcional)
+    invitations_created = relationship(
+        "Invitation",
+        back_populates="created_by",
+        foreign_keys="Invitation.created_by_id",
     )
 
 
@@ -184,6 +192,27 @@ class CancellationReason(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="cancellations")
+
+
+# =========================
+# INVITATIONS
+# =========================
+class Invitation(Base):
+    __tablename__ = "invitations"
+
+    id = Column(Integer, primary_key=True)
+    token = Column(String, unique=True, nullable=False, index=True)
+    email = Column(String, nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    used = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
+    created_by = relationship(
+        "User",
+        back_populates="invitations_created",
+        foreign_keys=[created_by_id],
+    )
 
 
 # =========================
