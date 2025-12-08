@@ -47,6 +47,15 @@ CREATE TABLE IF NOT EXISTS doctor_profiles (
 );
 """
 
+# 🔹 EXTENSIÓN PERFIL: alias de guardia
+SQL_DOCTOR_PROFILES_ALTER = """
+ALTER TABLE doctor_profiles
+    ADD COLUMN IF NOT EXISTS guard_alias TEXT;
+
+ALTER TABLE doctor_profiles
+    ADD COLUMN IF NOT EXISTS guard_alias_locked INTEGER DEFAULT 0;
+"""
+
 SQL_PATIENTS = """
 CREATE TABLE IF NOT EXISTS patients (
     id SERIAL PRIMARY KEY,
@@ -142,6 +151,49 @@ CREATE TABLE IF NOT EXISTS cancellation_reasons (
 """
 
 # ------------------------------
+# TABLAS NUEVAS: MÓDULO DE GUARDIA
+# ------------------------------
+
+SQL_GUARD_CASES = """
+CREATE TABLE IF NOT EXISTS guard_cases (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT,
+    age_group TEXT,
+    sex TEXT,
+    context TEXT,
+    anonymized_summary TEXT,
+    status TEXT DEFAULT 'open',
+    patient_ref_id INTEGER,
+    created_at TIMESTAMP DEFAULT NOW(),
+    last_activity_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+SQL_GUARD_MESSAGES = """
+CREATE TABLE IF NOT EXISTS guard_messages (
+    id SERIAL PRIMARY KEY,
+    case_id INTEGER NOT NULL REFERENCES guard_cases(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    author_alias TEXT,
+    raw_content TEXT,
+    clean_content TEXT,
+    moderation_status TEXT,
+    moderation_reason TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+SQL_GUARD_FAVORITES = """
+CREATE TABLE IF NOT EXISTS guard_favorites (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    case_id INTEGER NOT NULL REFERENCES guard_cases(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+# ------------------------------
 # MIGRACIÓN COMPLETA
 # ------------------------------
 
@@ -153,7 +205,7 @@ def migrate_init(x_admin_token: str | None = Header(None)):
         with engine.begin() as conn:
             # Orden correcto (para evitar problemas de FK)
             conn.execute(text(SQL_USERS))
-            conn.execute(text(SQL_DOCTOR_PROFILES))   # ⭐ NUEVO PERFIL MÉDICO
+            conn.execute(text(SQL_DOCTOR_PROFILES))   # ⭐ PERFIL MÉDICO
             conn.execute(text(SQL_PATIENTS))
             conn.execute(text(SQL_ANALYTICS))
             conn.execute(text(SQL_ANALYTIC_MARKERS))
@@ -163,9 +215,20 @@ def migrate_init(x_admin_token: str | None = Header(None)):
             conn.execute(text(SQL_TIMELINE_ITEMS))
             conn.execute(text(SQL_CANCELLATION_REASONS))
 
+            # 🔹 Extender doctor_profiles con alias de guardia (idempotente)
+            conn.execute(text(SQL_DOCTOR_PROFILES_ALTER))
+
+            # 🔹 Tablas de guardia (De Guardia / Cartelera)
+            conn.execute(text(SQL_GUARD_CASES))
+            conn.execute(text(SQL_GUARD_MESSAGES))
+            conn.execute(text(SQL_GUARD_FAVORITES))
+
         return {
             "status": "ok",
-            "message": "Migración completada: incluye doctor_profiles, exam_date y cancellation_reasons."
+            "message": (
+                "Migración completada: incluye doctor_profiles, exam_date, "
+                "cancellation_reasons y tablas de guardia (guard_cases, guard_messages, guard_favorites)."
+            ),
         }
 
     except Exception as e:

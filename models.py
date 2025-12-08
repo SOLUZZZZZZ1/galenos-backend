@@ -61,6 +61,10 @@ class DoctorProfile(Base):
     city = Column(String(120))
     bio = Column(Text)             # breve descripción / presentación
 
+    # Alias para módulo De Guardia
+    guard_alias = Column(String(80))
+    guard_alias_locked = Column(Integer, default=0)
+
     user = relationship("User", back_populates="doctor_profile")
 
 
@@ -232,3 +236,60 @@ class AccessRequest(Base):
     how_heard = Column(String)
     message = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# =========================
+# MÓDULO DE GUARDIA
+# =========================
+class GuardCase(Base):
+    __tablename__ = "guard_cases"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    title = Column(Text)
+    age_group = Column(Text)
+    sex = Column(Text)
+    context = Column(Text)
+
+    anonymized_summary = Column(Text)
+    status = Column(Text, default="open")
+
+    patient_ref_id = Column(Integer)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_activity_at = Column(DateTime, default=datetime.utcnow)
+
+    messages = relationship("GuardMessage", back_populates="case", cascade="all, delete")
+    favorites = relationship("GuardFavorite", back_populates="case", cascade="all, delete")
+
+
+class GuardMessage(Base):
+    __tablename__ = "guard_messages"
+
+    id = Column(Integer, primary_key=True)
+    case_id = Column(Integer, ForeignKey("guard_cases.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    author_alias = Column(Text)
+    raw_content = Column(Text)
+    clean_content = Column(Text)
+
+    moderation_status = Column(Text)
+    moderation_reason = Column(Text)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    case = relationship("GuardCase", back_populates="messages")
+
+
+class GuardFavorite(Base):
+    __tablename__ = "guard_favorites"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    case_id = Column(Integer, ForeignKey("guard_cases.id"), nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    case = relationship("GuardCase", back_populates="favorites")
