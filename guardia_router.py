@@ -1,4 +1,19 @@
-# guardia_router.py — Módulo De guardia / Cartelera clínica · Galenos.pro
+# guardia_router.py — Módulo "De guardia / Cartelera clínica" · Galenos.pro
+#
+# Funcionalidad:
+# - Crear consultas de guardia (casos clínicos)
+# - Usar opcionalmente el historial del paciente (última analítica / imagen)
+# - Listar casos de guardia (cartelera)
+# - Ver detalle de un caso
+# - Hilo de mensajes entre médicos
+# - Favoritos
+# - Resumen simple del debate
+#
+# Requiere:
+# - Tablas: guard_cases, guard_messages, guard_favorites
+# - Modelos: GuardCase, GuardMessage, GuardFavorite, Analytic, Imaging
+# - auth.get_current_user
+# - security_crypto.encrypt_text
 
 from datetime import datetime
 from typing import List, Optional
@@ -20,7 +35,11 @@ router = APIRouter(prefix="/guard", tags=["guardia"])
 # =========================================================
 
 class GuardCaseCreate(BaseModel):
-    patient_id: Optional[int] = None   # ID interno de paciente (opcional)
+    """
+    Datos que envía el frontend al crear una consulta de guardia.
+    patient_id es opcional; si viene, se usará el historial de ese paciente.
+    """
+    patient_id: Optional[int] = None
     title: str
     age_group: Optional[str] = None
     sex: Optional[str] = None
@@ -87,17 +106,20 @@ class IASummaryResponse(BaseModel):
 
 
 # =========================================================
-# Moderación y anonimización básica
+# Moderación y anonimización básica (sin IA externa)
 # =========================================================
 
 def moderate_and_anonimize(text: str) -> tuple[str, str, str]:
     """
-    Aplica una moderación muy prudente:
-    - Tapa posibles teléfonos
-    - Tapa posibles emails
-    - Deja el resto igual
+    Moderación prudente:
+    - Oculta posibles emails
+    - Oculta posibles teléfonos
+    (Se puede extender con DNIs, direcciones, etc.)
 
-    Devuelve (clean_text, moderation_status, reason)
+    Devuelve:
+    - clean_text
+    - moderation_status: "ok" | "auto_cleaned"
+    - reason: explicación corta (opcional)
     """
     if not text:
         return "", "ok", ""
@@ -115,7 +137,7 @@ def moderate_and_anonimize(text: str) -> tuple[str, str, str]:
         status = "auto_cleaned"
         reason = "Se han eliminado posibles emails."
 
-    # Teléfonos tipo 600 123 456, 600123456, etc.
+    # Teléfonos tipo 600123456, 600 123 456, etc.
     phone_pattern = re.compile(r"\b\d{3}[\s\-]?\d{2,3}[\s\-]?\d{2,3}\b")
     if phone_pattern.search(clean):
         clean = phone_pattern.sub("***", clean)
@@ -125,18 +147,17 @@ def moderate_and_anonimize(text: str) -> tuple[str, str, str]:
         else:
             reason = (reason + " Se han eliminado posibles teléfonos.").strip()
 
-    # Aquí se podrían añadir reglas para DNIs, direcciones muy explícitas, etc.
-
     return clean, status, reason
 
 
 def build_case_summary(payload: GuardCaseCreate) -> str:
     """
-    Construye un resumen clínico en texto plano a partir del formulario estructurado.
-    Este resumen es la base del texto que se mostrará en De guardia.
+    Construye el bloque clínico de la consulta a partir del formulario.
+    Esto es lo que tú escribes: síntomas, hallazgos, pregunta, texto libre.
     """
-    parts = []
+    parts: list[str] = []
 
+    # Cabecera: edad, sexo, contexto
     header = []
     if payload.age_group:
         header.append(payload.age_group)
@@ -144,7 +165,6 @@ def build_case_summary(payload: GuardCaseCreate) -> str:
         header.append(payload.sex)
     if payload.context:
         header.append(payload.context)
-
     if header:
         parts.append(" · ".join(header))
 
@@ -165,18 +185,24 @@ def build_case_summary(payload: GuardCaseCreate) -> str:
 
 def build_support_from_patient(db: Session, patient_id: int) -> str:
     """
-    Toma la última analítica y la última imagen de un paciente
-    y construye un bloque de texto clínico para añadir como
-    'DATOS DE APOYO' a la consulta de guardia.
+    Toma la última analítica y la última imagen de un paciente,
+    y construye un bloque de texto clínico de apoyo para De guardia.
+
+    Usa:
+    - Analytic.summary
+    - Imaging.summary
     """
     parts: list[str] = []
 
-    # Última analítica (por exam_date y luego created_at)
+    # Última analítica (por exam_date o, si no, por created_at)
     last_analytic = (
         db.query(Analytic)
         .filter(Analytic.patient_id == patient_id)
-        .order_by(Analytic.exam_date.desc().nullslast(),
-                  Analytic.created_at.desc())
+        .order_by(
+            Analytic.exam_date.desc().nullslast()
+            if hasattr(Analytic.exam_date, "desc")
+            else Analytic.created_at.desc()
+        )
         .first()
     )
     if last_analytic and last_analytic.summary:
@@ -189,8 +215,11 @@ def build_support_from_patient(db: Session, patient_id: int) -> str:
     last_imaging = (
         db.query(Imaging)
         .filter(Imaging.patient_id == patient_id)
-        .order_by(Imaging.exam_date.desc().nullslast(),
-                  Imaging.created_at.desc())
+        .order_by(
+            Imaging.exam_date.desc().nullslast()
+            if hasattr(Imaging.exam_date, "desc")
+            else Imaging.created_at.desc()
+        )
         .first()
     )
     if last_imaging and last_imaging.summary:
@@ -203,7 +232,7 @@ def build_support_from_patient(db: Session, patient_id: int) -> str:
 
 
 # =========================================================
-# ENDPOINT: PREVIEW (anonimizar antes de publicar)
+# PREVIEW — /guard/cases/preview
 # =========================================================
 
 @router.post("/cases/preview", response_model=GuardCasePreviewResponse)
@@ -213,12 +242,17 @@ def preview_guard_case(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Construye el texto completo (caso + apoyo del historial si hay patient_id),
-    lo modera/anonimiza y devuelve solo la versión segura.
+    Construye el texto completo:
+    - resumen clínico del formulario
+    - + datos de apoyo (analítica/imaging) si viene patient_id
+
+    Lo pasa por moderación/anonimización
+    y devuelve solo la versión segura (anonymized_summary).
     """
     base = build_case_summary(payload)
     original = base
 
+    # Si hay patient_id, añadimos el bloque de apoyo del historial
     if payload.patient_id:
         support = build_support_from_patient(db, payload.patient_id)
         if support:
@@ -231,7 +265,7 @@ def preview_guard_case(
 
 
 # =========================================================
-# ENDPOINT: CREAR CASO (y primer mensaje)
+# CREAR CASO — /guard/cases (POST)
 # =========================================================
 
 @router.post("/cases", response_model=GuardCaseListItem)
@@ -240,10 +274,14 @@ def create_guard_case(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """
+    Crea:
+    - un GuardCase
+    - y su primer GuardMessage (el caso inicial como mensaje)
+    """
     base = build_case_summary(payload)
     original = base
 
-    # Si viene patient_id, añadimos datos de apoyo de la BBDD (analítica / imagen)
     if payload.patient_id:
         support = build_support_from_patient(db, payload.patient_id)
         if support:
@@ -252,6 +290,7 @@ def create_guard_case(
     clean, status, _reason = moderate_and_anonimize(original)
     anonymized = clean if clean else original
 
+    # Alias de guardia obligatorio
     author_alias = (
         current_user.doctor_profile.guard_alias
         if current_user.doctor_profile else None
@@ -264,7 +303,7 @@ def create_guard_case(
 
     now = datetime.utcnow()
 
-    # 1) Crear el caso
+    # Crear caso
     guard_case = GuardCase(
         user_id=current_user.id,
         title=payload.title.strip(),
@@ -273,7 +312,7 @@ def create_guard_case(
         context=payload.context or None,
         anonymized_summary=anonymized,
         status="open",
-        patient_ref_id=payload.patient_id,  # vínculo interno con el paciente
+        patient_ref_id=payload.patient_id,  # vínculo interno con el paciente (no visible en la cartelera)
         created_at=now,
         last_activity_at=now,
     )
@@ -281,7 +320,7 @@ def create_guard_case(
     db.commit()
     db.refresh(guard_case)
 
-    # 2) Crear el primer mensaje (el caso inicial como mensaje del autor)
+    # Crear primer mensaje (caso inicial)
     encrypted_raw = encrypt_text(original) if original else None
     msg = GuardMessage(
         case_id=guard_case.id,
@@ -295,7 +334,6 @@ def create_guard_case(
     )
     db.add(msg)
     db.commit()
-    db.refresh(msg)
 
     # Recontar mensajes
     message_count = (
@@ -320,7 +358,7 @@ def create_guard_case(
 
 
 # =========================================================
-# ENDPOINT: LISTAR CASOS (cartelera)
+# LISTAR CASOS — /guard/cases (GET)
 # =========================================================
 
 @router.get("/cases", response_model=GuardCaseListResponse)
@@ -355,6 +393,7 @@ def list_guard_cases(
 
     cases = q.all()
 
+    # IDs de favoritos del usuario
     fav_ids = {
         f.case_id
         for f in db.query(GuardFavorite)
@@ -392,7 +431,7 @@ def list_guard_cases(
 
 
 # =========================================================
-# ENDPOINT: DETALLE DE CASO
+# DETALLE DE CASO — /guard/cases/{case_id}
 # =========================================================
 
 @router.get("/cases/{case_id}", response_model=GuardCaseDetail)
@@ -422,7 +461,7 @@ def get_guard_case(
 
 
 # =========================================================
-# ENDPOINT: LISTAR MENSAJES
+# LISTAR MENSAJES — /guard/cases/{case_id}/messages (GET)
 # =========================================================
 
 @router.get("/cases/{case_id}/messages", response_model=GuardMessagesListResponse)
@@ -457,7 +496,7 @@ def list_guard_messages(
 
 
 # =========================================================
-# ENDPOINT: AÑADIR MENSAJE AL HILO
+# AÑADIR MENSAJE — /guard/cases/{case_id}/messages (POST)
 # =========================================================
 
 @router.post("/cases/{case_id}/messages", response_model=GuardMessageOut)
@@ -576,7 +615,7 @@ def unmark_favorite_case(
 
 
 # =========================================================
-# RESUMEN IA DEL DEBATE (versión simple)
+# RESUMEN IA (simple) — /guard/cases/{case_id}/summary-ia
 # =========================================================
 
 @router.get("/cases/{case_id}/summary-ia", response_model=IASummaryResponse)
@@ -585,6 +624,11 @@ def summarize_case_debate(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """
+    Resumen simple del debate:
+    - No llama a ningún servicio externo
+    - Nunca debe dar error de conexión
+    """
     case = db.query(GuardCase).filter(GuardCase.id == case_id).first()
     if not case:
         raise HTTPException(status_code=404, detail="Consulta de guardia no encontrada.")
