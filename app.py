@@ -2,6 +2,8 @@ import os
 from fastapi import FastAPI, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from guardia_router import router as guardia_router
+from doctor_profile_extra import router as doctor_profile_extra_router
 
 from database import Base, engine, get_db
 from models import User, AccessRequest
@@ -172,3 +174,5 @@ app.include_router(timeline.router)
 app.include_router(stripe_payments.router)
 app.include_router(migrate_galenos.router)
 app.include_router(doctor_profile.router)
+app.include_router(guardia_router)
+app.include_router(doctor_profile_extra_router)
