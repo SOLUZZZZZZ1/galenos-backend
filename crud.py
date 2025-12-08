@@ -136,17 +136,45 @@ def create_analytic(
 
 
 def add_markers_to_analytic(db: Session, analytic_id: int, markers: list):
+    """
+    Guarda marcadores de una analítica, limpiando valores no numéricos
+    para que no reviente la BD cuando la IA devuelve cosas tipo "Negatiu", "Positiu++", etc.
+    """
+
+    def to_float_or_none(val):
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
     for m in markers:
+        name = m.get("name")
+        if not name:
+            # Si no hay nombre, no tiene sentido guardar este marcador
+            continue
+
+        value = to_float_or_none(m.get("value"))
+        ref_min = to_float_or_none(m.get("ref_min"))
+        ref_max = to_float_or_none(m.get("ref_max"))
+        unit = m.get("unit")
+
         marker = AnalyticMarker(
             analytic_id=analytic_id,
-            name=m.get("name"),
-            value=m.get("value"),
-            unit=m.get("unit"),
-            ref_min=m.get("ref_min"),
-            ref_max=m.get("ref_max"),
+            name=name,
+            value=value,      # Solo número o NULL
+            unit=unit,
+            ref_min=ref_min,  # Solo número o NULL
+            ref_max=ref_max,  # Solo número o NULL
         )
         db.add(marker)
-    db.commit()
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise e
 
 
 def get_analytics_for_patient(db: Session, patient_id: int):
