@@ -36,9 +36,29 @@ def get_user_by_id(db: Session, user_id: int):
 # PACIENTES
 # ===============================================
 def create_patient(db: Session, doctor_id: int, data: PatientCreate):
+    """
+    Crea un paciente nuevo para un médico:
+    - Alias
+    - doctor_id
+    - patient_number secuencial por médico (1,2,3…)
+    - Entrada en timeline
+    """
+    # Calcular siguiente patient_number para este médico
+    last = (
+        db.query(Patient)
+        .filter(Patient.doctor_id == doctor_id)
+        .order_by(Patient.patient_number.desc().nullslast())
+        .first()
+    )
+
+    next_number = 1
+    if last and last.patient_number:
+        next_number = last.patient_number + 1
+
     patient = Patient(
         alias=data.alias,
         doctor_id=doctor_id,
+        patient_number=next_number,
     )
     db.add(patient)
     db.commit()
@@ -54,6 +74,7 @@ def create_patient(db: Session, doctor_id: int, data: PatientCreate):
     db.commit()
 
     return patient
+
 
 
 def get_patients_for_doctor(db: Session, doctor_id: int):
