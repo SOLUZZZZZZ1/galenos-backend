@@ -204,15 +204,17 @@ class AccessRequestReturn(BaseModel):
 # ===============================================
 # DOCTOR PROFILE (Perfil Médico)
 # ===============================================
-class DoctorProfileBase(BaseModel):
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
-    specialty: Optional[str] = None
-    colegiado_number: Optional[str] = None
-    phone: Optional[str] = None
-    center: Optional[str] = None
-    city: Optional[str] = None
-    bio: Optional[str] = None
+class DoctorProfileReturn(DoctorProfileBase):
+    id: int
+    user_id: int
+    email: EmailStr
+    # 👇 Añadimos esto:
+    guard_alias: Optional[str] = None
+    guard_alias_locked: bool = False
+
+    class Config:
+        from_attributes = True
+
 
 
 class DoctorProfileCreate(DoctorProfileBase):
