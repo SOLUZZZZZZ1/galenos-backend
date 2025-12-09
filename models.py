@@ -82,7 +82,7 @@ class Patient(Base):
     notes = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    # 👇 NUEVO: número clínico por médico (1,2,3…) para mostrar al médico
+    # Número clínico por médico (1,2,3…)
     patient_number = Column(Integer)
 
     doctor = relationship("User", back_populates="patients")
@@ -90,6 +90,7 @@ class Patient(Base):
     imaging = relationship("Imaging", back_populates="patient", cascade="all, delete")
     notes_rel = relationship("ClinicalNote", back_populates="patient", cascade="all, delete")
     timeline_items = relationship("TimelineItem", back_populates="patient", cascade="all, delete")
+
 
 
 # =========================
