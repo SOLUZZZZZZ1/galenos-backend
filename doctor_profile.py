@@ -34,6 +34,9 @@ def get_my_profile(
         "center": profile.center,
         "city": profile.city,
         "bio": profile.bio,
+        # 👇 AÑADIMOS ESTO
+        "guard_alias": getattr(profile, "guard_alias", None),
+        "guard_alias_locked": bool(getattr(profile, "guard_alias_locked", 0)),
     }
 
 
@@ -64,6 +67,9 @@ def create_my_profile(
         "center": profile.center,
         "city": profile.city,
         "bio": profile.bio,
+        # guard_alias puede no estar aún
+        "guard_alias": getattr(profile, "guard_alias", None),
+        "guard_alias_locked": bool(getattr(profile, "guard_alias_locked", 0)),
     }
 
 
@@ -91,4 +97,6 @@ def update_my_profile(
         "center": profile.center,
         "city": profile.city,
         "bio": profile.bio,
+        "guard_alias": getattr(profile, "guard_alias", None),
+        "guard_alias_locked": bool(getattr(profile, "guard_alias_locked", 0)),
     }
