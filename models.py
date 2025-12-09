@@ -212,8 +212,8 @@ class Invitation(Base):
     email = Column(String, nullable=True)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     used = Column(Integer, default=0)
-    created_at = DateTime, default=datetime.utcnow
-    expires_at = DateTime, nullable=True
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
 
     created_by = relationship(
         "User",
@@ -258,7 +258,7 @@ class GuardCase(Base):
     anonymized_summary = Column(Text)
     status = Column(Text, default="open")
 
-    patient_ref_id = Integer
+    patient_ref_id = Column(Integer)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     last_activity_at = Column(DateTime, default=datetime.utcnow)
