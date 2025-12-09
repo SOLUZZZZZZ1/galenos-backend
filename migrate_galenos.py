@@ -68,6 +68,31 @@ CREATE TABLE IF NOT EXISTS patients (
 );
 """
 
+# 🔹 EXTENSIÓN PACIENTES: numeración por médico (patient_number)
+SQL_PATIENTS_ALTER = """
+ALTER TABLE patients
+    ADD COLUMN IF NOT EXISTS patient_number INTEGER;
+"""
+
+# 🔹 RELLENAR patient_number PARA PACIENTES EXISTENTES
+SQL_PATIENTS_BACKFILL = """
+WITH ordered AS (
+    SELECT
+        id,
+        doctor_id,
+        ROW_NUMBER() OVER (
+            PARTITION BY doctor_id
+            ORDER BY created_at ASC, id ASC
+        ) AS rn
+    FROM patients
+)
+UPDATE patients p
+SET patient_number = o.rn
+FROM ordered o
+WHERE p.id = o.id
+  AND (p.patient_number IS NULL OR p.patient_number = 0);
+"""
+
 SQL_ANALYTICS = """
 CREATE TABLE IF NOT EXISTS analytics (
     id SERIAL PRIMARY KEY,
@@ -223,11 +248,15 @@ def migrate_init(x_admin_token: str | None = Header(None)):
             conn.execute(text(SQL_GUARD_MESSAGES))
             conn.execute(text(SQL_GUARD_FAVORITES))
 
+            # 🔹 Numeración clínica por médico (patient_number)
+            conn.execute(text(SQL_PATIENTS_ALTER))
+            conn.execute(text(SQL_PATIENTS_BACKFILL))
+
         return {
             "status": "ok",
             "message": (
                 "Migración completada: incluye doctor_profiles, exam_date, "
-                "cancellation_reasons y tablas de guardia (guard_cases, guard_messages, guard_favorites)."
+                "cancellation_reasons, tablas de guardia y numeración patient_number por médico."
             ),
         }
 
