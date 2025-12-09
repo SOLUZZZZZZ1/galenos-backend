@@ -1,3 +1,5 @@
+# crud.py — Lógica de base de datos para Galenos.pro
+
 from sqlalchemy.orm import Session
 import json
 from datetime import date
@@ -40,10 +42,11 @@ def create_patient(db: Session, doctor_id: int, data: PatientCreate):
     Crea un paciente nuevo para un médico:
     - Alias
     - doctor_id
-    - patient_number secuencial por médico (1,2,3…)
-    - Entrada en timeline
+    - Asigna patient_number secuencial por médico (1,2,3…)
+    - Añade evento de alta en el timeline
     """
-    # Calcular siguiente patient_number para este médico
+
+    # Buscar el último número de paciente para este médico
     last = (
         db.query(Patient)
         .filter(Patient.doctor_id == doctor_id)
@@ -74,7 +77,6 @@ def create_patient(db: Session, doctor_id: int, data: PatientCreate):
     db.commit()
 
     return patient
-
 
 
 def get_patients_for_doctor(db: Session, doctor_id: int):
@@ -287,17 +289,20 @@ def get_imaging_by_hash(db: Session, patient_id: int, file_hash: str):
 
 
 # ===============================================
-# CLINICAL NOTES (CIFRADAS)
+# NOTAS CLÍNICAS
 # ===============================================
 def create_clinical_note(
     db: Session,
     patient_id: int,
     doctor_id: int,
-    data: ClinicalNoteCreate,
+    note_data: ClinicalNoteCreate,
 ):
-    """Crea nota clínica cifrando título y contenido."""
-    title_clean = data.title.strip() if data.title else None
-    content_clean = data.content.strip() if data.content else None
+    """
+    Crea una nota clínica cifrando título y contenido.
+    """
+
+    title_clean = note_data.title.strip()
+    content_clean = note_data.content.strip()
 
     note = ClinicalNote(
         patient_id=patient_id,
