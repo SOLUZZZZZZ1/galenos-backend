@@ -114,11 +114,12 @@ def moderate_and_anonimize(text: str) -> tuple[str, str, str]:
     Moderación prudente:
     - Oculta posibles emails
     - Oculta posibles teléfonos
+    - Enmascara insultos habituales (lenguaje ofensivo)
     (Se puede extender con DNIs, direcciones, etc.)
 
     Devuelve:
     - clean_text
-    - moderation_status: "ok" | "auto_cleaned"
+    - moderation_status: "ok" | "auto_cleaned" | "moderated"
     - reason: explicación corta (opcional)
     """
     if not text:
@@ -146,6 +147,39 @@ def moderate_and_anonimize(text: str) -> tuple[str, str, str]:
             reason = "Se han eliminado posibles teléfonos."
         else:
             reason = (reason + " Se han eliminado posibles teléfonos.").strip()
+
+    # Lista básica de insultos a enmascarar (se puede ampliar)
+    forbidden_words = [
+        "idiota",
+        "subnormal",
+        "gilipollas",
+        "imbécil",
+        "capullo",
+        "cabrón",
+        "mierda",
+    ]
+
+    insults_found = False
+
+    def mask_match(match: re.Match) -> str:
+        original = match.group(0)
+        return "*" * len(original)
+
+    for bad in forbidden_words:
+        pattern = re.compile(rf"\b{re.escape(bad)}\b", re.IGNORECASE)
+        if pattern.search(clean):
+            insults_found = True
+            clean = pattern.sub(mask_match, clean)
+
+    if insults_found:
+        # Marcamos como moderado y añadimos motivo
+        if status == "ok":
+            status = "moderated"
+            reason = "Lenguaje ofensivo enmascarado automáticamente."
+        else:
+            status = "moderated"
+            extra = " Se ha enmascarado lenguaje ofensivo."
+            reason = (reason + extra).strip()
 
     return clean, status, reason
 
