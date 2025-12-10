@@ -219,6 +219,30 @@ CREATE TABLE IF NOT EXISTS guard_favorites (
 """
 
 # ------------------------------
+# RESET COMPLETO DE BD (BORRA TODO)
+# ------------------------------
+
+SQL_RESET_ALL = """
+TRUNCATE TABLE
+  guard_messages,
+  guard_favorites,
+  guard_cases,
+  analytic_markers,
+  analytics,
+  imaging_patterns,
+  imaging,
+  clinical_notes,
+  timeline_items,
+  cancellation_reasons,
+  patients,
+  doctor_profiles,
+  invitations,
+  access_requests,
+  users
+RESTART IDENTITY CASCADE;
+"""
+
+# ------------------------------
 # MIGRACIÓN COMPLETA
 # ------------------------------
 
@@ -262,3 +286,20 @@ def migrate_init(x_admin_token: str | None = Header(None)):
 
     except Exception as e:
         raise HTTPException(500, f"Error en migración: {e}")
+
+
+@router.post("/reset")
+def migrate_reset_all(x_admin_token: str | None = Header(None)):
+    _auth(x_admin_token)
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(SQL_RESET_ALL))
+
+        return {
+            "status": "ok",
+            "message": "BD limpiada: se han borrado todos los usuarios, pacientes y datos relacionados, y se han reseteado los IDs."
+        }
+
+    except Exception as e:
+        raise HTTPException(500, f"Error en reset: {e}")
