@@ -219,6 +219,23 @@ CREATE TABLE IF NOT EXISTS guard_favorites (
 """
 
 # ------------------------------
+# TABLA NUEVA: ACTUALIDAD MÉDICA
+# ------------------------------
+
+SQL_MEDICAL_NEWS = """
+CREATE TABLE IF NOT EXISTS medical_news (
+    id SERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    summary TEXT,
+    source_name TEXT,
+    source_url TEXT NOT NULL,
+    published_at TIMESTAMP NULL,
+    specialty_tags TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+# ------------------------------
 # RESET COMPLETO DE BD (BORRA TODO)
 # ------------------------------
 
@@ -234,6 +251,7 @@ TRUNCATE TABLE
   clinical_notes,
   timeline_items,
   cancellation_reasons,
+  medical_news,
   patients,
   doctor_profiles,
   invitations,
@@ -264,23 +282,27 @@ def migrate_init(x_admin_token: str | None = Header(None)):
             conn.execute(text(SQL_TIMELINE_ITEMS))
             conn.execute(text(SQL_CANCELLATION_REASONS))
 
-            # 🔹 Extender doctor_profiles con alias de guardia (idempotente)
-            conn.execute(text(SQL_DOCTOR_PROFILES_ALTER))
-
             # 🔹 Tablas de guardia (De Guardia / Cartelera)
             conn.execute(text(SQL_GUARD_CASES))
             conn.execute(text(SQL_GUARD_MESSAGES))
             conn.execute(text(SQL_GUARD_FAVORITES))
 
+            # 🔹 Extender doctor_profiles con alias de guardia (idempotente)
+            conn.execute(text(SQL_DOCTOR_PROFILES_ALTER))
+
             # 🔹 Numeración clínica por médico (patient_number)
             conn.execute(text(SQL_PATIENTS_ALTER))
             conn.execute(text(SQL_PATIENTS_BACKFILL))
+
+            # 🔹 Actualidad médica
+            conn.execute(text(SQL_MEDICAL_NEWS))
 
         return {
             "status": "ok",
             "message": (
                 "Migración completada: incluye doctor_profiles, exam_date, "
-                "cancellation_reasons, tablas de guardia y numeración patient_number por médico."
+                "cancellation_reasons, tablas de guardia, numeración patient_number por médico "
+                "y tabla medical_news para actualidad médica."
             ),
         }
 

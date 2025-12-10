@@ -92,7 +92,6 @@ class Patient(Base):
     timeline_items = relationship("TimelineItem", back_populates="patient", cascade="all, delete")
 
 
-
 # =========================
 # ANALYTICS
 # =========================
@@ -151,7 +150,7 @@ class ImagingPattern(Base):
 
     id = Column(Integer, primary_key=True)
     imaging_id = Column(Integer, ForeignKey("imaging.id"), nullable=False)
-    pattern_text = Column(Text)
+    pattern_text = Text()
 
     imaging = relationship("Imaging", back_populates="patterns")
 
@@ -297,3 +296,19 @@ class GuardFavorite(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     case = relationship("GuardCase", back_populates="favorites")
+
+
+# =========================
+# ACTUALIDAD MÉDICA
+# =========================
+class MedicalNews(Base):
+    __tablename__ = "medical_news"
+
+    id = Column(Integer, primary_key=True)
+    title = Column(Text, nullable=False)
+    summary = Column(Text)
+    source_name = Column(String)
+    source_url = Column(String, nullable=False)
+    published_at = Column(DateTime)
+    specialty_tags = Column(String)  # p. ej. "cardio,urgencias"
+    created_at = Column(DateTime, default=datetime.utcnow)

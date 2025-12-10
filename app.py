@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from guardia_router import router as guardia_router
 from doctor_profile_extra import router as doctor_profile_extra_router
 from admin_doctors import router as admin_doctors_router
+from medical_news_router import router as medical_news_router
 
 
 from database import Base, engine, get_db
@@ -179,3 +180,4 @@ app.include_router(doctor_profile.router)
 app.include_router(guardia_router)
 app.include_router(doctor_profile_extra_router)
 app.include_router(admin_doctors_router)
+app.include_router(medical_news_router)
