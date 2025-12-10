@@ -150,7 +150,7 @@ class ImagingPattern(Base):
 
     id = Column(Integer, primary_key=True)
     imaging_id = Column(Integer, ForeignKey("imaging.id"), nullable=False)
-    pattern_text = Text()
+    pattern_text = Column(Text, nullable=False)
 
     imaging = relationship("Imaging", back_populates="patterns")
 
