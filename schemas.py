@@ -235,3 +235,20 @@ class DoctorProfileReturn(DoctorProfileBase):
 
     class Config:
         from_attributes = True
+
+
+# ===============================================
+# MEDICAL NEWS (Actualidad médica)
+# ===============================================
+class MedicalNewsReturn(BaseModel):
+    id: int
+    title: str
+    summary: Optional[str] = None
+    source_name: Optional[str] = None
+    source_url: str
+    published_at: Optional[datetime] = None
+    specialty_tags: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
