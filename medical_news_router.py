@@ -1,4 +1,7 @@
+# medical_news_router.py — Actualidad médica Galenos
 from typing import List, Optional
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -20,17 +23,16 @@ def list_medical_news(
 
     - specialty: filtro opcional por etiqueta de especialidad (ej: "cardio", "urgencias").
     - limit: máximo de noticias a devolver.
-
-    Más adelante se puede conectar a un servicio que alimente la tabla medical_news
-    desde RSS/APIs externas con resúmenes automáticos.
     """
     if limit <= 0 or limit > 100:
-        raise HTTPException(status_code=400, detail="El parámetro 'limit' debe estar entre 1 y 100.")
+        raise HTTPException(
+            status_code=400,
+            detail="El parámetro 'limit' debe estar entre 1 y 100.",
+        )
 
     q = db.query(MedicalNews)
 
     if specialty:
-        # Búsqueda sencilla por substring en specialty_tags, p.ej. "cardio,urgencias"
         like_val = f"%{specialty.lower()}%"
         q = q.filter(MedicalNews.specialty_tags.ilike(like_val))
 
@@ -40,3 +42,31 @@ def list_medical_news(
     )
 
     return q.limit(limit).all()
+
+
+@router.post("/admin-demo", response_model=MedicalNewsReturn)
+def create_demo_news(db: Session = Depends(get_db)):
+    """
+    Crea una noticia de ejemplo en medical_news para probar la sección
+    de Actualidad médica.
+
+    Solo para uso interno / pruebas. En producción real, esto se sustituye
+    por el servicio RSS o inserciones reales.
+    """
+    demo = MedicalNews(
+        title="Ejemplo de noticia clínica en Galenos",
+        summary=(
+            "Esta es una noticia de ejemplo para comprobar la sección de "
+            "Actualidad médica. En producción, aquí verás resúmenes reales "
+            "de estudios, guías clínicas o alertas sanitarias."
+        ),
+        source_name="Galenos · Demo interna",
+        source_url="https://galenos.pro/",
+        published_at=datetime.utcnow(),
+        specialty_tags="general",
+        created_at=datetime.utcnow(),
+    )
+    db.add(demo)
+    db.commit()
+    db.refresh(demo)
+    return demo
