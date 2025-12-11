@@ -188,6 +188,61 @@ def _parse_exam_date(exam_date_str: Optional[str]) -> Optional[date]:
         return None
 
 
+def _build_response_from_existing_analytic(
+    existing,
+    alias: str,
+    filename: str,
+) -> Dict[str, Any]:
+    """
+    Construye la respuesta frontend a partir de una Analytic existente en BD,
+    SIN volver a llamar a la IA ni guardar nada nuevo.
+    """
+    # Marcadores desde BD
+    markers_from_db: List[Dict[str, Any]] = []
+    try:
+        for m in getattr(existing, "markers", []) or []:
+            markers_from_db.append(
+                {
+                    "name": getattr(m, "name", None),
+                    "value": getattr(m, "value", None),
+                    "unit": getattr(m, "unit", None),
+                    "ref_min": getattr(m, "ref_min", None),
+                    "ref_max": getattr(m, "ref_max", None),
+                }
+            )
+    except Exception:
+        markers_from_db = []
+
+    markers_normalized = _normalize_markers_for_front(markers_from_db or [])
+
+    # Reconstruir texto de diferencial
+    differential_text = ""
+    try:
+        diff_val = json.loads(existing.differential) if existing.differential else []
+        if isinstance(diff_val, list):
+            differential_text = "; ".join(
+                str(d).strip() for d in diff_val if str(d).strip()
+            )
+        elif diff_val:
+            differential_text = str(diff_val).strip()
+    except Exception:
+        if existing.differential:
+            differential_text = str(existing.differential).strip()
+
+    return {
+        "id": existing.id,
+        "patient_id": existing.patient_id,
+        "patient_alias": alias,
+        "file_name": filename,
+        "summary": existing.summary,
+        "differential": differential_text,
+        "markers": markers_normalized,
+        "created_at": existing.created_at,
+        "exam_date": existing.exam_date,
+        "duplicate": True,  # campo extra por si quieres usarlo en el front
+    }
+
+
 # =====================================================
 # 1) /analytics/analyze  (IA SIN guardar en BD)
 # =====================================================
@@ -227,7 +282,7 @@ async def analyze_lab_with_ai(
 
 
 # =====================================================
-# 2) /analytics/upload/{patient_id}  (IA + HISTÓRICO)
+# 2) /analytics/upload/{patient_id}  (IA + HISTÓRICO, con deduplicación temprana)
 # =====================================================
 @router.post("/upload/{patient_id}")
 async def upload_analytic_for_patient(
@@ -244,6 +299,11 @@ async def upload_analytic_for_patient(
     """
     Analiza una analítica con IA y la guarda como histórico del paciente.
     exam_date = fecha real de la extracción/informe (si el médico la indica).
+
+    DEDUPLICACIÓN TEMPRANA:
+    - Calcula hash del fichero.
+    - Si ya existe una analítica con ese hash para este paciente,
+      devuelve el resultado previo SIN llamar a IA ni guardar nada nuevo.
     """
     # 1) Comprobar paciente
     patient = crud.get_patient_by_id(db, patient_id, current_user.id)
@@ -261,62 +321,29 @@ async def upload_analytic_for_patient(
     if not content:
         raise HTTPException(status_code=400, detail="El fichero está vacío")
 
-    # Calculamos hash SHA-256 del fichero para deduplicación
+    # 2) Hash del fichero para deduplicación
     file_hash = hashlib.sha256(content).hexdigest()
 
-    # Parsear exam_date (YYYY-MM-DD) a date
+    # 3) Parsear exam_date (YYYY-MM-DD) a date
     exam_date_value = _parse_exam_date(exam_date)
 
-    # 2) Preparar imágenes
-    images_b64 = _prepare_images_from_file(file, content)
-
-    # 3) Llamar a IA
-    summary, differential_list, markers_raw = _call_vision_analytics(alias, images_b64)
-
-    # 4) Evitar analíticas duplicadas por hash
+    # 4) DEDUPLICACIÓN TEMPRANA: buscar analítica previa con este hash
     existing = crud.get_analytic_by_hash(db, patient_id, file_hash)
     if existing:
-        # Recoger marcadores existentes desde la BD para devolverlos normalizados
-        markers_from_db: List[Dict[str, Any]] = []
-        try:
-            for m in getattr(existing, "markers", []) or []:
-                markers_from_db.append({
-                    "name": getattr(m, "name", None),
-                    "value": getattr(m, "value", None),
-                    "unit": getattr(m, "unit", None),
-                    "ref_min": getattr(m, "ref_min", None),
-                    "ref_max": getattr(m, "ref_max", None),
-                })
-        except Exception:
-            markers_from_db = []
+        # Devolvemos el análisis previo, sin volver a llamar a la IA
+        return _build_response_from_existing_analytic(
+            existing=existing,
+            alias=alias,
+            filename=file.filename,
+        )
 
-        markers_normalized = _normalize_markers_for_front(markers_from_db)
+    # 5) Preparar imágenes para Vision (solo si NO es duplicado)
+    images_b64 = _prepare_images_from_file(file, content)
 
-        # Intentamos reconstruir texto de diferencial
-        differential_text = ""
-        try:
-            diff_val = json.loads(existing.differential) if existing.differential else []
-            if isinstance(diff_val, list):
-                differential_text = "; ".join(str(d).strip() for d in diff_val if str(d).strip())
-            elif diff_val:
-                differential_text = str(diff_val).strip()
-        except Exception:
-            if existing.differential:
-                differential_text = str(existing.differential).strip()
+    # 6) Llamar a IA
+    summary, differential_list, markers_raw = _call_vision_analytics(alias, images_b64)
 
-        return {
-            "id": existing.id,
-            "patient_id": patient_id,
-            "patient_alias": alias,
-            "file_name": file.filename,
-            "summary": existing.summary,
-            "differential": differential_text,
-            "markers": markers_normalized,
-            "created_at": existing.created_at,
-            "exam_date": existing.exam_date,
-        }
-
-    # 4) Guardar Analytic en BD (differential como lista/JSON)
+    # 7) Guardar Analytic en BD (differential como lista/JSON)
     # Usamos la primera imagen como previsualización (data URL PNG)
     preview_b64 = images_b64[0] if images_b64 else None
     file_path_preview = f"data:image/png;base64,{preview_b64}" if preview_b64 else None
@@ -331,11 +358,11 @@ async def upload_analytic_for_patient(
         exam_date=exam_date_value,
     )
 
-    # 5) Guardar marcadores en BD
+    # 8) Guardar marcadores en BD
     if markers_raw:
         crud.add_markers_to_analytic(db=db, analytic_id=analytic.id, markers=markers_raw)
 
-    # 6) Devolver al frontend
+    # 9) Devolver al frontend
     markers_normalized = _normalize_markers_for_front(markers_raw or [])
 
     return {
@@ -348,6 +375,7 @@ async def upload_analytic_for_patient(
         "markers": markers_normalized,
         "created_at": analytic.created_at,
         "exam_date": analytic.exam_date,
+        "duplicate": False,
     }
 
 
