@@ -12,12 +12,29 @@ from schemas import MedicalNewsReturn
 router = APIRouter(prefix="/medical-news", tags=["medical-news"])
 
 
-@router.get("/", response_model=List[MedicalNewsReturn])
-def list_medical_news(
-    db: Session = Depends(get_db),
-    specialty: Optional[str] = None,
-    limit: int = 20,
-):
+@router.get("/admin-demo", response_model=MedicalNewsReturn)
+def create_demo_news(db: Session = Depends(get_db)):
+    """
+    Crea una noticia de ejemplo para Actualidad Médica.
+    Permite comprobar que el frontend y backend funcionan correctamente.
+    """
+    from datetime import datetime
+
+    demo = MedicalNews(
+        title="Nueva alerta clínica: actualización de guías 2025",
+        summary="Este es un ejemplo de noticia clínica generada para comprobar Actualidad Médica.",
+        source_name="Fuente Demo Galenos",
+        source_url="https://galenos.pro/",
+        published_at=datetime.utcnow(),
+        specialty_tags="general",
+        created_at=datetime.utcnow(),
+    )
+
+    db.add(demo)
+    db.commit()
+    db.refresh(demo)
+    return demo
+
     """
     Devuelve un listado de noticias médicas resumidas.
 
