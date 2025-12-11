@@ -4,13 +4,14 @@
 # - /analytics/analyze         → IA "suelta" (no guarda en BD, modo sandbox)
 # - /analytics/upload/{id}     → IA + guarda en BD + timeline para un paciente
 # - /analytics/by-patient/{id} → Lista analíticas históricas de un paciente
+# - /analytics/compare/{id}    → Comparativa temporal de marcadores
 # - /analytics/chat            → Mini-chat clínico sobre una analítica
 
 import os
 import hashlib
 import json
 from typing import List, Optional, Any, Dict
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from fastapi import (
     APIRouter,
@@ -239,7 +240,7 @@ def _build_response_from_existing_analytic(
         "markers": markers_normalized,
         "created_at": existing.created_at,
         "exam_date": existing.exam_date,
-        "duplicate": True,  # campo extra por si quieres usarlo en el front
+        "duplicate": True,
     }
 
 
@@ -282,7 +283,7 @@ async def analyze_lab_with_ai(
 
 
 # =====================================================
-# 2) /analytics/upload/{patient_id}  (IA + HISTÓRICO, con deduplicación temprana)
+# 2) /analytics/upload/{patient_id}  (IA + HISTÓRICO, con deduplicación)
 # =====================================================
 @router.post("/upload/{patient_id}")
 async def upload_analytic_for_patient(
@@ -298,14 +299,8 @@ async def upload_analytic_for_patient(
 ):
     """
     Analiza una analítica con IA y la guarda como histórico del paciente.
-    exam_date = fecha real de la extracción/informe (si el médico la indica).
-
-    DEDUPLICACIÓN TEMPRANA:
-    - Calcula hash del fichero.
-    - Si ya existe una analítica con ese hash para este paciente,
-      devuelve el resultado previo SIN llamar a IA ni guardar nada nuevo.
+    DEDUP: si el hash coincide, no se re-analiza y se reutiliza el análisis previo.
     """
-    # 1) Comprobar paciente
     patient = crud.get_patient_by_id(db, patient_id, current_user.id)
     if not patient:
         raise HTTPException(404, "Paciente no encontrado o no pertenece al usuario.")
@@ -321,30 +316,21 @@ async def upload_analytic_for_patient(
     if not content:
         raise HTTPException(status_code=400, detail="El fichero está vacío")
 
-    # 2) Hash del fichero para deduplicación
     file_hash = hashlib.sha256(content).hexdigest()
-
-    # 3) Parsear exam_date (YYYY-MM-DD) a date
     exam_date_value = _parse_exam_date(exam_date)
 
-    # 4) DEDUPLICACIÓN TEMPRANA: buscar analítica previa con este hash
+    # DEDUP temprana
     existing = crud.get_analytic_by_hash(db, patient_id, file_hash)
     if existing:
-        # Devolvemos el análisis previo, sin volver a llamar a la IA
         return _build_response_from_existing_analytic(
             existing=existing,
             alias=alias,
             filename=file.filename,
         )
 
-    # 5) Preparar imágenes para Vision (solo si NO es duplicado)
     images_b64 = _prepare_images_from_file(file, content)
-
-    # 6) Llamar a IA
     summary, differential_list, markers_raw = _call_vision_analytics(alias, images_b64)
 
-    # 7) Guardar Analytic en BD (differential como lista/JSON)
-    # Usamos la primera imagen como previsualización (data URL PNG)
     preview_b64 = images_b64[0] if images_b64 else None
     file_path_preview = f"data:image/png;base64,{preview_b64}" if preview_b64 else None
 
@@ -358,11 +344,9 @@ async def upload_analytic_for_patient(
         exam_date=exam_date_value,
     )
 
-    # 8) Guardar marcadores en BD
     if markers_raw:
         crud.add_markers_to_analytic(db=db, analytic_id=analytic.id, markers=markers_raw)
 
-    # 9) Devolver al frontend
     markers_normalized = _normalize_markers_for_front(markers_raw or [])
 
     return {
@@ -446,7 +430,87 @@ def list_analytics_by_patient(
 
 
 # =====================================================
-# 4) /analytics/chat  (mini-chat clínico)
+# 4) /analytics/compare/{id}  (COMPARATIVA TEMPORAL)
+# =====================================================
+@router.get("/compare/{patient_id}")
+def compare_analytics_for_patient(
+    patient_id: int,
+    months: int = 6,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    """
+    Devuelve una comparativa temporal de marcadores para un paciente:
+
+    - Agrupa marcadores por nombre.
+    - Incluye todos los puntos de los últimos X meses (por defecto 6).
+    - Usa exam_date si existe, si no created_at.
+    """
+    if months <= 0 or months > 60:
+        raise HTTPException(400, "El parámetro 'months' debe estar entre 1 y 60.")
+
+    patient = crud.get_patient_by_id(db, patient_id, current_user.id)
+    if not patient:
+        raise HTTPException(404, "Paciente no encontrado o no pertenece al usuario.")
+
+    # Corte temporal aproximado (months X 30 días)
+    now = datetime.utcnow()
+    cutoff = now - timedelta(days=30 * months)
+
+    rows = crud.get_analytics_for_patient(db, patient_id=patient_id)
+
+    series: Dict[str, List[Dict[str, Any]]] = {}
+
+    for analytic in rows:
+        # determinar fecha de la analítica
+        dt = None
+        if analytic.exam_date:
+            dt = datetime.combine(analytic.exam_date, datetime.min.time())
+        else:
+            dt = analytic.created_at
+
+        if not dt or dt < cutoff:
+            continue
+
+        date_str = dt.date().isoformat()
+
+        # Extraer marcadores
+        try:
+            for m in getattr(analytic, "markers", []) or []:
+                name = getattr(m, "name", None)
+                value = getattr(m, "value", None)
+                if not name or value is None:
+                    continue
+                name = str(name).strip()
+                if not name:
+                    continue
+
+                if name not in series:
+                    series[name] = []
+                series[name].append(
+                    {
+                        "date": date_str,
+                        "value": float(value),
+                    }
+                )
+        except Exception:
+            continue
+
+    # Ordenar cada serie por fecha
+    for name, points in series.items():
+        points.sort(key=lambda x: x["date"])
+
+    return {
+        "patient_id": patient_id,
+        "months": months,
+        "from_date": cutoff.date().isoformat(),
+        "to_date": now.date().isoformat(),
+        "markers": series,
+    }
+
+
+# =====================================================
+# 5) /analytics/chat  (mini-chat clínico)
 # =====================================================
 @router.post("/chat")
 async def analytics_chat(
