@@ -1,16 +1,51 @@
-# guardia_router.py — Módulo De Guardia con adjuntos clínicos anonimizados (sin PDFs)
-from fastapi import APIRouter, Depends, HTTPException, Query
+# guardia_router.py — De Guardia (con adjuntos clínicos anonimizados)
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from typing import Optional, List
-
 from pydantic import BaseModel
+from datetime import datetime
+import os
+import re
+
+from cryptography.fernet import Fernet
 
 from database import get_db
 from auth import get_current_user
 from models import GuardCase, GuardMessage, Analytic, Imaging
-from utils_guardia import moderate_and_anonimize
 
 router = APIRouter(prefix="/guard", tags=["guardia"])
+
+
+# ======================================================
+# Moderación y anonimización LOCAL (sin imports externos)
+# ======================================================
+def _get_fernet() -> Fernet:
+    key = os.getenv("FERNET_KEY")
+    if not key:
+        key = Fernet.generate_key().decode("utf-8")
+    return Fernet(key.encode("utf-8"))
+
+
+def moderate_and_anonimize(text: str):
+    text = (text or "").strip()
+    fernet = _get_fernet()
+
+    encrypted = (
+        fernet.encrypt(text.encode("utf-8")).decode("utf-8")
+        if text else ""
+    )
+
+    clean = text
+    clean = re.sub(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", "[email]", clean)
+    clean = re.sub(r"\b\d{9}\b", "[teléfono]", clean)
+    clean = re.sub(r"\b\d{7,8}[A-Za-z]\b", "[documento]", clean)
+    clean = re.sub(r"\b\d{12,}\b", "[id]", clean)
+
+    return {
+        "clean_content": clean.strip(),
+        "encrypted_original": encrypted,
+        "moderation_status": "ok",
+    }
 
 
 # ======================================================
@@ -25,19 +60,15 @@ class GuardCaseCreateIn(BaseModel):
     title: str
     original: str
     patient_id: Optional[int] = None
-
-    # campos opcionales (si tu front los manda, los guardamos; si no, no pasa nada)
     author_alias: Optional[str] = None
     age_group: Optional[str] = None
     sex: Optional[str] = None
     context: Optional[str] = None
-
-    # NUEVO: adjuntos clínicos (anonimizados)
     attachments: Optional[List[GuardAttachment]] = None
 
 
 # ======================================================
-# NUEVO: opciones de adjuntos clínicos (anonimizados)
+# Adjuntos disponibles (anonimizados)
 # ======================================================
 @router.get("/attachments/options")
 def guard_attachment_options(
@@ -45,12 +76,6 @@ def guard_attachment_options(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """
-    Devuelve analíticas e imágenes disponibles para adjuntar (texto clínico),
-    sin ficheros originales.
-    """
-    # NOTA: aquí no aplicamos doctor_id porque tus tablas actuales se cuelgan de patient_id,
-    # y el acceso del paciente ya lo controlas en tu flujo de pacientes.
     analytics = (
         db.query(Analytic)
         .filter(Analytic.patient_id == patient_id)
@@ -67,26 +92,18 @@ def guard_attachment_options(
 
     return {
         "analytics": [
-            {
-                "id": a.id,
-                "exam_date": a.exam_date,
-                "summary": a.summary,
-            }
+            {"id": a.id, "exam_date": a.exam_date, "summary": a.summary or ""}
             for a in analytics
         ],
         "imaging": [
-            {
-                "id": i.id,
-                "type": i.img_type,  # en tu modelo Imaging usas img_type
-                "summary": i.summary,
-            }
+            {"id": i.id, "type": i.img_type or "imagen", "summary": i.summary or ""}
             for i in imaging
         ],
     }
 
 
 # ======================================================
-# CREAR CASO DE GUARDIA (con adjuntos opcionales)
+# Crear caso de guardia
 # ======================================================
 @router.post("/cases")
 def create_guard_case(
@@ -94,46 +111,32 @@ def create_guard_case(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """
-    Crea una consulta de guardia.
-    Si hay attachments, se añaden como bloque "Adjuntos clínicos" antes de anonimizar.
-    """
+    original_text = (payload.original or "").strip()
 
-    original_text = payload.original or ""
-
-    # ==========================
-    # Adjuntos clínicos (opcional)
-    # ==========================
     if payload.attachments:
         blocks = []
         for att in payload.attachments:
             if att.kind == "analytic":
                 a = db.query(Analytic).filter(Analytic.id == att.id).first()
-                if not a:
-                    continue
-                blocks.append(
-                    f"ANALÍTICA ({a.exam_date or 'fecha no especificada'}):\n{a.summary or ''}"
-                )
-
+                if a:
+                    blocks.append(
+                        f"ANALÍTICA ({a.exam_date or 'fecha no especificada'}):\n{a.summary or ''}"
+                    )
             elif att.kind == "imaging":
                 i = db.query(Imaging).filter(Imaging.id == att.id).first()
-                if not i:
-                    continue
-                blocks.append(
-                    f"IMAGEN ({i.img_type or 'imagen'}):\n{i.summary or ''}"
-                )
+                if i:
+                    blocks.append(
+                        f"IMAGEN ({i.img_type or 'imagen'}):\n{i.summary or ''}"
+                    )
 
         if blocks:
             original_text += (
-                "\n\nADJUNTOS CLÍNICOS (ANONIMIZADOS):\n" + "\n\n".join(blocks)
+                "\n\nADJUNTOS CLÍNICOS (ANONIMIZADOS):\n"
+                + "\n\n".join(blocks)
             )
 
-    # ==========================
-    # Anonimización y moderación
-    # ==========================
     clean = moderate_and_anonimize(original_text)
 
-    # GuardCase (usa el mismo patrón que tu backend ya tenía)
     case = GuardCase(
         title=payload.title,
         anonymized_summary=clean["clean_content"],
@@ -144,19 +147,21 @@ def create_guard_case(
         age_group=payload.age_group,
         sex=payload.sex,
         context=payload.context,
+        last_activity_at=datetime.utcnow(),
     )
 
     db.add(case)
     db.commit()
     db.refresh(case)
 
-    # Primer mensaje
     msg = GuardMessage(
         case_id=case.id,
         author_alias=payload.author_alias or "anónimo",
         clean_content=clean["clean_content"],
         moderation_status=clean["moderation_status"],
+        created_at=datetime.utcnow(),
     )
+
     db.add(msg)
     db.commit()
 
