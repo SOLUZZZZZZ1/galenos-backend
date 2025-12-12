@@ -252,14 +252,15 @@ def create_case_message(
     clean = anonimize_text(payload.content)
 
     msg = GuardMessage(
-        case_id=case_id,
-        user_id=current_user.id,
-        author_alias=payload.author_alias or "anónimo",
-        raw_content=payload.content,
-        clean_content=clean,
-        moderation_status="ok",
-        created_at=datetime.utcnow(),
-    )
+    case_id=case.id,
+    user_id=current_user.id,
+    author_alias=payload.author_alias or "anónimo",
+    raw_content=original_text,
+    clean_content=clean_text,
+    moderation_status="ok",
+    created_at=datetime.utcnow(),
+)
+
 
     db.add(msg)
     c.last_activity_at = datetime.utcnow()
