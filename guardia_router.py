@@ -15,23 +15,22 @@ router = APIRouter(prefix="/guard", tags=["guardia"])
 
 
 # ======================================================
-# Anonimización básica (sin cifrado para GuardCase)
+# Anonimización simple
 # ======================================================
 def anonimize_text(text: str) -> str:
     text = (text or "").strip()
-    clean = text
-    clean = re.sub(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", "[email]", clean)
-    clean = re.sub(r"\b\d{9}\b", "[teléfono]", clean)
-    clean = re.sub(r"\b\d{7,8}[A-Za-z]\b", "[documento]", clean)
-    clean = re.sub(r"\b\d{12,}\b", "[id]", clean)
-    return clean.strip()
+    text = re.sub(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", "[email]", text)
+    text = re.sub(r"\b\d{9}\b", "[teléfono]", text)
+    text = re.sub(r"\b\d{7,8}[A-Za-z]\b", "[documento]", text)
+    text = re.sub(r"\b\d{12,}\b", "[id]", text)
+    return text.strip()
 
 
 # ======================================================
-# Schemas locales
+# Schemas
 # ======================================================
 class GuardAttachment(BaseModel):
-    kind: str  # "analytic" | "imaging"
+    kind: str   # "analytic" | "imaging"
     id: int
 
 
@@ -52,7 +51,7 @@ class GuardMessageCreateIn(BaseModel):
 
 
 # ======================================================
-# Adjuntos disponibles (anonimizados)
+# Adjuntos disponibles
 # ======================================================
 @router.get("/attachments/options")
 def guard_attachment_options(
@@ -74,24 +73,19 @@ def guard_attachment_options(
         .all()
     )
 
-    imaging_items = []
-    for i in imaging:
-        img_type = (
-            getattr(i, "img_type", None)
-            or getattr(i, "type", None)
-            or getattr(i, "study_type", None)
-            or "imagen"
-        )
-        imaging_items.append(
-            {"id": i.id, "type": img_type, "summary": getattr(i, "summary", "") or ""}
-        )
-
     return {
         "analytics": [
             {"id": a.id, "exam_date": a.exam_date, "summary": a.summary or ""}
             for a in analytics
         ],
-        "imaging": imaging_items,
+        "imaging": [
+            {
+                "id": i.id,
+                "type": i.type or "imagen",
+                "summary": i.summary or "",
+            }
+            for i in imaging
+        ],
     }
 
 
@@ -104,12 +98,13 @@ def list_guard_cases(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    q = db.query(GuardCase)
+    q = db.query(GuardCase).filter(GuardCase.user_id == current_user.id)
 
     if status:
         q = q.filter(GuardCase.status == status)
 
-    q = q.order_by(GuardCase.last_activity_at.desc().nullslast(), GuardCase.id.desc())
+    q = q.order_by(GuardCase.last_activity_at.desc())
+
     cases = q.all()
 
     items = []
@@ -126,18 +121,16 @@ def list_guard_cases(
             .order_by(GuardMessage.id.asc())
             .first()
         )
-        author_alias = first_msg.author_alias if first_msg else "anónimo"
 
         items.append(
             {
                 "id": c.id,
                 "title": c.title,
                 "anonymized_summary": c.anonymized_summary,
-                "author_alias": author_alias,
+                "author_alias": first_msg.author_alias if first_msg else "anónimo",
                 "status": c.status,
                 "message_count": msg_count,
                 "last_activity_at": c.last_activity_at,
-                "is_favorite": False,
                 "age_group": c.age_group,
                 "sex": c.sex,
                 "context": c.context,
@@ -148,103 +141,7 @@ def list_guard_cases(
 
 
 # ======================================================
-# DETALLE DE CASO
-# ======================================================
-@router.get("/cases/{case_id}")
-def get_guard_case(
-    case_id: int,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    c = db.query(GuardCase).filter(GuardCase.id == case_id).first()
-    if not c:
-        raise HTTPException(404, "Caso no encontrado.")
-
-    return {
-        "id": c.id,
-        "title": c.title,
-        "anonymized_summary": c.anonymized_summary,
-        "status": c.status,
-        "age_group": c.age_group,
-        "sex": c.sex,
-        "context": c.context,
-        "created_at": c.created_at,
-        "last_activity_at": c.last_activity_at,
-    }
-
-
-# ======================================================
-# MENSAJES DE UN CASO
-# ======================================================
-@router.get("/cases/{case_id}/messages")
-def list_case_messages(
-    case_id: int,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    msgs = (
-        db.query(GuardMessage)
-        .filter(GuardMessage.case_id == case_id)
-        .order_by(GuardMessage.created_at.asc().nullslast(), GuardMessage.id.asc())
-        .all()
-    )
-
-    return {
-        "items": [
-            {
-                "id": m.id,
-                "author_alias": m.author_alias,
-                "clean_content": m.clean_content,
-                "moderation_status": m.moderation_status,
-                "created_at": m.created_at,
-            }
-            for m in msgs
-        ]
-    }
-
-
-# ======================================================
-# AÑADIR MENSAJE A UN CASO
-# ======================================================
-@router.post("/cases/{case_id}/messages")
-def create_case_message(
-    case_id: int,
-    payload: GuardMessageCreateIn,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    c = db.query(GuardCase).filter(GuardCase.id == case_id).first()
-    if not c:
-        raise HTTPException(404, "Caso no encontrado.")
-
-    clean_text = anonimize_text(payload.content)
-
-    msg = GuardMessage(
-        case_id=case_id,
-        author_alias=payload.author_alias or "anónimo",
-        clean_content=clean_text,
-        moderation_status="ok",
-        created_at=datetime.utcnow(),
-    )
-    db.add(msg)
-
-    c.last_activity_at = datetime.utcnow()
-    db.add(c)
-
-    db.commit()
-    db.refresh(msg)
-
-    return {
-        "id": msg.id,
-        "author_alias": msg.author_alias,
-        "clean_content": msg.clean_content,
-        "moderation_status": msg.moderation_status,
-        "created_at": msg.created_at,
-    }
-
-
-# ======================================================
-# CREAR CASO (con adjuntos opcionales)
+# CREAR CASO
 # ======================================================
 @router.post("/cases")
 def create_guard_case(
@@ -252,45 +149,32 @@ def create_guard_case(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    original_text = (payload.original or "").strip()
+    original_text = payload.original or ""
 
-    # Adjuntos seleccionados
+    # Adjuntar resúmenes
     if payload.attachments:
         blocks = []
         for att in payload.attachments:
             if att.kind == "analytic":
                 a = db.query(Analytic).filter(Analytic.id == att.id).first()
                 if a:
-                    blocks.append(
-                        f"ANALÍTICA ({a.exam_date or 'fecha no especificada'}):\n{a.summary or ''}"
-                    )
+                    blocks.append(f"ANALÍTICA:\n{a.summary or ''}")
             elif att.kind == "imaging":
                 i = db.query(Imaging).filter(Imaging.id == att.id).first()
                 if i:
-                    img_type = (
-                        getattr(i, "img_type", None)
-                        or getattr(i, "type", None)
-                        or getattr(i, "study_type", None)
-                        or "imagen"
-                    )
-                    blocks.append(
-                        f"IMAGEN ({img_type}):\n{getattr(i, 'summary', '') or ''}"
-                    )
+                    blocks.append(f"IMAGEN ({i.type or 'imagen'}):\n{i.summary or ''}")
 
         if blocks:
-            original_text += (
-                "\n\nADJUNTOS CLÍNICOS (ANONIMIZADOS):\n" + "\n\n".join(blocks)
-            )
+            original_text += "\n\n" + "\n\n".join(blocks)
 
     clean_text = anonimize_text(original_text)
 
-    # ⚠️ GuardCase NO admite original_encrypted → NO lo pasamos
     case = GuardCase(
+        user_id=current_user.id,
         title=payload.title,
         anonymized_summary=clean_text,
-        author_id=current_user.id,
-        patient_id=payload.patient_id,
         status="open",
+        patient_ref_id=payload.patient_id,
         age_group=payload.age_group,
         sex=payload.sex,
         context=payload.context,
@@ -301,14 +185,16 @@ def create_guard_case(
     db.commit()
     db.refresh(case)
 
-    # Primer mensaje
     msg = GuardMessage(
         case_id=case.id,
+        user_id=current_user.id,
         author_alias=payload.author_alias or "anónimo",
+        raw_content=original_text,
         clean_content=clean_text,
         moderation_status="ok",
         created_at=datetime.utcnow(),
     )
+
     db.add(msg)
     db.commit()
 
