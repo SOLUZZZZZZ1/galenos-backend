@@ -1,16 +1,39 @@
-# guardia_router.py — Módulo De Guardia con adjuntos clínicos anonimizados
-
+# guardia_router.py — Módulo De Guardia con adjuntos clínicos anonimizados (sin PDFs)
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
+
+from pydantic import BaseModel
 
 from database import get_db
 from auth import get_current_user
 from models import GuardCase, GuardMessage, Analytic, Imaging
-from schemas import GuardCaseCreate
 from utils_guardia import moderate_and_anonimize
 
 router = APIRouter(prefix="/guard", tags=["guardia"])
+
+
+# ======================================================
+# Schemas locales (blindados)
+# ======================================================
+class GuardAttachment(BaseModel):
+    kind: str  # "analytic" | "imaging"
+    id: int
+
+
+class GuardCaseCreateIn(BaseModel):
+    title: str
+    original: str
+    patient_id: Optional[int] = None
+
+    # campos opcionales (si tu front los manda, los guardamos; si no, no pasa nada)
+    author_alias: Optional[str] = None
+    age_group: Optional[str] = None
+    sex: Optional[str] = None
+    context: Optional[str] = None
+
+    # NUEVO: adjuntos clínicos (anonimizados)
+    attachments: Optional[List[GuardAttachment]] = None
 
 
 # ======================================================
@@ -23,9 +46,11 @@ def guard_attachment_options(
     current_user=Depends(get_current_user),
 ):
     """
-    Devuelve analíticas e imágenes disponibles para adjuntar
-    (solo texto clínico, sin ficheros).
+    Devuelve analíticas e imágenes disponibles para adjuntar (texto clínico),
+    sin ficheros originales.
     """
+    # NOTA: aquí no aplicamos doctor_id porque tus tablas actuales se cuelgan de patient_id,
+    # y el acceso del paciente ya lo controlas en tu flujo de pacientes.
     analytics = (
         db.query(Analytic)
         .filter(Analytic.patient_id == patient_id)
@@ -52,7 +77,7 @@ def guard_attachment_options(
         "imaging": [
             {
                 "id": i.id,
-                "type": i.img_type,
+                "type": i.img_type,  # en tu modelo Imaging usas img_type
                 "summary": i.summary,
             }
             for i in imaging
@@ -65,13 +90,13 @@ def guard_attachment_options(
 # ======================================================
 @router.post("/cases")
 def create_guard_case(
-    payload: GuardCaseCreate,
+    payload: GuardCaseCreateIn,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
     """
     Crea una consulta de guardia.
-    Puede incluir adjuntos clínicos anonimizados (analíticas / imágenes).
+    Si hay attachments, se añaden como bloque "Adjuntos clínicos" antes de anonimizar.
     """
 
     original_text = payload.original or ""
@@ -87,25 +112,28 @@ def create_guard_case(
                 if not a:
                     continue
                 blocks.append(
-                    f"ANALÍTICA ({a.exam_date or 'fecha no especificada'}):\n{a.summary}"
+                    f"ANALÍTICA ({a.exam_date or 'fecha no especificada'}):\n{a.summary or ''}"
                 )
 
-            if att.kind == "imaging":
+            elif att.kind == "imaging":
                 i = db.query(Imaging).filter(Imaging.id == att.id).first()
                 if not i:
                     continue
                 blocks.append(
-                    f"IMAGEN ({i.img_type}):\n{i.summary}"
+                    f"IMAGEN ({i.img_type or 'imagen'}):\n{i.summary or ''}"
                 )
 
         if blocks:
-            original_text += "\n\nADJUNTOS CLÍNICOS (ANONIMIZADOS):\n" + "\n\n".join(blocks)
+            original_text += (
+                "\n\nADJUNTOS CLÍNICOS (ANONIMIZADOS):\n" + "\n\n".join(blocks)
+            )
 
     # ==========================
     # Anonimización y moderación
     # ==========================
     clean = moderate_and_anonimize(original_text)
 
+    # GuardCase (usa el mismo patrón que tu backend ya tenía)
     case = GuardCase(
         title=payload.title,
         anonymized_summary=clean["clean_content"],
@@ -122,9 +150,10 @@ def create_guard_case(
     db.commit()
     db.refresh(case)
 
+    # Primer mensaje
     msg = GuardMessage(
         case_id=case.id,
-        author_alias=payload.author_alias,
+        author_alias=payload.author_alias or "anónimo",
         clean_content=clean["clean_content"],
         moderation_status=clean["moderation_status"],
     )
