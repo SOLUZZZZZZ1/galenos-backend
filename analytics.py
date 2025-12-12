@@ -2,9 +2,10 @@
 #
 # Incluye:
 # - /analytics/analyze         → IA "suelta" (no guarda en BD, modo sandbox)
-# - /analytics/upload/{id}     → IA + guarda en BD + timeline para un paciente
+# - /analytics/upload/{id}     → IA + guarda en BD + timeline para un paciente (con deduplicación temprana)
 # - /analytics/by-patient/{id} → Lista analíticas históricas de un paciente
 # - /analytics/compare/{id}    → Comparativa temporal de marcadores
+# - /analytics/compare-summary/{id} → Resumen IA de la comparativa
 # - /analytics/chat            → Mini-chat clínico sobre una analítica
 
 import os
@@ -96,7 +97,6 @@ def _prepare_images_from_file(file: UploadFile, content: bytes) -> List[str]:
             import base64
             images_b64 = [base64.b64encode(content).decode("utf-8")]
         else:
-            # Intentamos leerlo como PDF por si acaso
             images_b64 = convert_pdf_to_images(content)
 
         if not images_b64:
@@ -117,7 +117,10 @@ def _prepare_images_from_file(file: UploadFile, content: bytes) -> List[str]:
 
 
 def _call_vision_analytics(alias: str, images_b64: List[str]):
-    """Llama a la IA Vision para analizar la analítica."""
+    """
+    Llama a la IA Vision para analizar la analítica.
+    Devuelve 4 valores: summary, differential_list, markers_raw, exam_date_ai
+    """
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise HTTPException(
@@ -128,14 +131,15 @@ def _call_vision_analytics(alias: str, images_b64: List[str]):
     model = os.getenv("GALENOS_VISION_MODEL", "gpt-4o")
     client = OpenAI(api_key=api_key)
 
-    summary, differential_list, markers_raw = analyze_with_ai_vision(
+    # 🔥 OJO: ahora analyze_with_ai_vision devuelve 4 valores
+    summary, differential_list, markers_raw, exam_date_ai = analyze_with_ai_vision(
         client=client,
         images_b64=images_b64,
         patient_alias=alias,
         model=model,
         system_prompt=SYSTEM_PROMPT_GALENOS,
     )
-    return summary, differential_list, markers_raw
+    return summary, differential_list, markers_raw, exam_date_ai
 
 
 def _normalize_markers_for_front(markers_raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -194,11 +198,7 @@ def _build_response_from_existing_analytic(
     alias: str,
     filename: str,
 ) -> Dict[str, Any]:
-    """
-    Construye la respuesta frontend a partir de una Analytic existente en BD,
-    SIN volver a llamar a la IA ni guardar nada nuevo.
-    """
-    # Marcadores desde BD
+    """Respuesta desde analítica existente (dedup) sin IA."""
     markers_from_db: List[Dict[str, Any]] = []
     try:
         for m in getattr(existing, "markers", []) or []:
@@ -216,7 +216,6 @@ def _build_response_from_existing_analytic(
 
     markers_normalized = _normalize_markers_for_front(markers_from_db or [])
 
-    # Reconstruir texto de diferencial
     differential_text = ""
     try:
         diff_val = json.loads(existing.differential) if existing.differential else []
@@ -252,23 +251,15 @@ async def analyze_lab_with_ai(
     alias: str = Form(..., description="Alias del paciente"),
     file: UploadFile = File(..., description="Analítica en PDF o imagen"),
 ):
-    """
-    Analiza una analítica (PDF/imagen) con IA (Vision) y devuelve resultado orientativo.
-    NO guarda en BD. Modo 'sandbox' para el médico.
-    """
     if not file.filename:
         raise HTTPException(status_code=400, detail="Fichero no válido")
 
-    try:
-        content = await file.read()
-    except Exception:
-        raise HTTPException(status_code=500, detail="No se pudo leer el fichero subido")
-
+    content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="El fichero está vacío")
 
     images_b64 = _prepare_images_from_file(file, content)
-    summary, differential_list, markers_raw = _call_vision_analytics(alias, images_b64)
+    summary, differential_list, markers_raw, exam_date_ai = _call_vision_analytics(alias, images_b64)
 
     differential_text = "; ".join(differential_list) if differential_list else ""
     markers = _normalize_markers_for_front(markers_raw or [])
@@ -279,6 +270,7 @@ async def analyze_lab_with_ai(
         "summary": summary,
         "differential": differential_text,
         "markers": markers,
+        "exam_date_ai": exam_date_ai,
     }
 
 
@@ -290,17 +282,10 @@ async def upload_analytic_for_patient(
     patient_id: int,
     alias: str = Form(..., description="Alias del paciente para el prompt"),
     file: UploadFile = File(..., description="Analítica en PDF o imagen"),
-    exam_date: Optional[str] = Form(
-        None,
-        description="Fecha real de la analítica (YYYY-MM-DD, opcional)"
-    ),
+    exam_date: Optional[str] = Form(None, description="Fecha real (YYYY-MM-DD, opcional)"),
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
-    """
-    Analiza una analítica con IA y la guarda como histórico del paciente.
-    DEDUP: si el hash coincide, no se re-analiza y se reutiliza el análisis previo.
-    """
     patient = crud.get_patient_by_id(db, patient_id, current_user.id)
     if not patient:
         raise HTTPException(404, "Paciente no encontrado o no pertenece al usuario.")
@@ -308,28 +293,27 @@ async def upload_analytic_for_patient(
     if not file.filename:
         raise HTTPException(status_code=400, detail="Fichero no válido")
 
-    try:
-        content = await file.read()
-    except Exception:
-        raise HTTPException(status_code=500, detail="No se pudo leer el fichero subido")
-
+    content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="El fichero está vacío")
 
     file_hash = hashlib.sha256(content).hexdigest()
-    exam_date_value = _parse_exam_date(exam_date)
+
+    # Fecha manual si la pone el médico
+    manual_exam_date = _parse_exam_date(exam_date)
 
     # DEDUP temprana
     existing = crud.get_analytic_by_hash(db, patient_id, file_hash)
     if existing:
-        return _build_response_from_existing_analytic(
-            existing=existing,
-            alias=alias,
-            filename=file.filename,
-        )
+        return _build_response_from_existing_analytic(existing, alias, file.filename)
 
     images_b64 = _prepare_images_from_file(file, content)
-    summary, differential_list, markers_raw = _call_vision_analytics(alias, images_b64)
+    summary, differential_list, markers_raw, exam_date_ai = _call_vision_analytics(alias, images_b64)
+
+    # Prioridad: manual > IA > None
+    final_exam_date = manual_exam_date
+    if final_exam_date is None and exam_date_ai:
+        final_exam_date = _parse_exam_date(exam_date_ai)
 
     preview_b64 = images_b64[0] if images_b64 else None
     file_path_preview = f"data:image/png;base64,{preview_b64}" if preview_b64 else None
@@ -341,7 +325,7 @@ async def upload_analytic_for_patient(
         differential=differential_list or [],
         file_path=file_path_preview,
         file_hash=file_hash,
-        exam_date=exam_date_value,
+        exam_date=final_exam_date,
     )
 
     if markers_raw:
@@ -364,7 +348,7 @@ async def upload_analytic_for_patient(
 
 
 # =====================================================
-# 3) /analytics/by-patient/{id}  (LISTAR HISTÓRICO)
+# 3) /analytics/by-patient/{id}
 # =====================================================
 @router.get("/by-patient/{patient_id}", response_model=list[AnalyticReturn])
 def list_analytics_by_patient(
@@ -372,7 +356,6 @@ def list_analytics_by_patient(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
-    """Devuelve todas las analíticas ligadas a un paciente concreto + marcadores normalizados."""
     patient = crud.get_patient_by_id(db, patient_id, current_user.id)
     if not patient:
         raise HTTPException(404, "Paciente no encontrado o no pertenece al usuario.")
@@ -381,7 +364,6 @@ def list_analytics_by_patient(
 
     results: List[Dict[str, Any]] = []
     for analytic in rows:
-        # Recoger marcadores desde la BD
         markers_raw: List[Dict[str, Any]] = []
         try:
             for m in getattr(analytic, "markers", []) or []:
@@ -399,7 +381,6 @@ def list_analytics_by_patient(
 
         markers_normalized = _normalize_markers_for_front(markers_raw or [])
 
-        # Reconstruir texto de diferencial (guardado como JSON/string)
         differential_text = None
         try:
             if analytic.differential:
@@ -430,7 +411,7 @@ def list_analytics_by_patient(
 
 
 # =====================================================
-# 4) /analytics/compare/{id}  (COMPARATIVA TEMPORAL)
+# 4) /analytics/compare/{id}
 # =====================================================
 @router.get("/compare/{patient_id}")
 def compare_analytics_for_patient(
@@ -439,13 +420,6 @@ def compare_analytics_for_patient(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
-    """
-    Devuelve una comparativa temporal de marcadores para un paciente:
-
-    - Agrupa marcadores por nombre.
-    - Incluye todos los puntos de los últimos X meses (por defecto 6).
-    - Usa exam_date si existe, si no created_at.
-    """
     if months <= 0 or months > 60:
         raise HTTPException(400, "El parámetro 'months' debe estar entre 1 y 60.")
 
@@ -453,7 +427,6 @@ def compare_analytics_for_patient(
     if not patient:
         raise HTTPException(404, "Paciente no encontrado o no pertenece al usuario.")
 
-    # Corte temporal aproximado (months X 30 días)
     now = datetime.utcnow()
     cutoff = now - timedelta(days=30 * months)
 
@@ -462,8 +435,6 @@ def compare_analytics_for_patient(
     series: Dict[str, List[Dict[str, Any]]] = {}
 
     for analytic in rows:
-        # determinar fecha de la analítica
-        dt = None
         if analytic.exam_date:
             dt = datetime.combine(analytic.exam_date, datetime.min.time())
         else:
@@ -474,7 +445,6 @@ def compare_analytics_for_patient(
 
         date_str = dt.date().isoformat()
 
-        # Extraer marcadores
         try:
             for m in getattr(analytic, "markers", []) or []:
                 name = getattr(m, "name", None)
@@ -484,19 +454,14 @@ def compare_analytics_for_patient(
                 name = str(name).strip()
                 if not name:
                     continue
-
                 if name not in series:
                     series[name] = []
                 series[name].append(
-                    {
-                        "date": date_str,
-                        "value": float(value),
-                    }
+                    {"date": date_str, "value": float(value)}
                 )
         except Exception:
             continue
 
-    # Ordenar cada serie por fecha
     for name, points in series.items():
         points.sort(key=lambda x: x["date"])
 
@@ -510,13 +475,103 @@ def compare_analytics_for_patient(
 
 
 # =====================================================
-# 5) /analytics/chat  (mini-chat clínico)
+# 5) /analytics/compare-summary/{id}
+# =====================================================
+@router.post("/compare-summary/{patient_id}")
+def compare_summary_for_patient(
+    patient_id: int,
+    months: int = 6,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    base = compare_analytics_for_patient(
+        patient_id=patient_id,
+        months=months,
+        db=db,
+        current_user=current_user,
+    )
+
+    markers = base.get("markers", {})
+    if not markers:
+        return {
+            "summary": "",
+            "explanation": "No hay datos suficientes para generar una comparativa.",
+        }
+
+    lines = []
+    for name, points in markers.items():
+        pts = points if isinstance(points, list) else []
+        if len(pts) == 0:
+            continue
+        ordered = sorted(pts, key=lambda x: x["date"])
+        first = ordered[0]
+        last = ordered[-1]
+        if first.get("value") is None or last.get("value") is None:
+            continue
+        delta = last["value"] - first["value"]
+        lines.append(
+            f"- Marcador: {name}. Primer valor: {first['value']} ({first['date']}). "
+            f"Último valor: {last['value']} ({last['date']}). Cambio: {delta:+.2f}."
+        )
+
+    if not lines:
+        return {
+            "summary": "",
+            "explanation": "No hay tendencias claras en los datos disponibles.",
+        }
+
+    text_for_ai = "\n".join(lines)
+
+    system_prompt = (
+        "Eres un asistente clínico que resume la evolución de marcadores analíticos "
+        "en los últimos meses. No diagnosticas ni prescribes; solo describes tendencias "
+        "y elementos clínicamente relevantes, de forma prudente. Habla en español."
+    )
+
+    user_prompt = (
+        f"Paciente con analíticas en los últimos {months} meses.\n"
+        f"Evolución por marcador:\n{text_for_ai}\n\n"
+        "Genera un resumen clínico orientativo de esta evolución."
+    )
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(500, "OPENAI_API_KEY no está configurada en el backend.")
+
+    client = OpenAI(api_key=api_key)
+    text_model = os.getenv("GALENOS_TEXT_MODEL", "gpt-4o-mini")
+
+    try:
+        resp = client.chat.completions.create(
+            model=text_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        answer = resp.choices[0].message.content
+    except Exception as e:
+        print("[Compare-Summary] Error llamando a OpenAI:", repr(e))
+        raise HTTPException(500, "No se ha podido generar el resumen de la comparativa.")
+
+    disclaimer = (
+        "Galenos.pro no diagnostica ni prescribe. Este resumen es un apoyo orientativo "
+        "para el médico. La interpretación final corresponde siempre al médico responsable."
+    )
+
+    return {
+        "summary": answer,
+        "disclaimer": disclaimer,
+        "months": months,
+        "markers": markers,
+    }
+
+
+# =====================================================
+# 6) /analytics/chat
 # =====================================================
 @router.post("/chat")
-async def analytics_chat(
-    payload: ChatRequest,
-):
-    """Mini chat clínico orientativo sobre una analítica ya analizada."""
+async def analytics_chat(payload: ChatRequest):
     if not payload.question or not payload.question.strip():
         raise HTTPException(status_code=400, detail="La pregunta no puede estar vacía.")
 
@@ -535,24 +590,18 @@ async def analytics_chat(
 
     system_text = (
         "Eres un asistente clínico que ayuda a un médico a interpretar, de forma prudente, "
-        "una analítica ya analizada por Galenos.pro. No puedes ver el PDF original ahora; "
-        "solo conoces el resumen, el diagnóstico diferencial y los marcadores extraídos. "
-        "NO debes diagnosticar ni prescribir. Tu función es ayudar a ordenar ideas, sugerir "
-        "hipótesis generales y recordar que la decisión final corresponde siempre al médico responsable."
+        "una analítica ya analizada por Galenos.pro. No diagnosticas ni prescribes."
     )
 
     user_text = (
-        f"Paciente: {alias}. Resumen previo de la analítica: {base_summary}. "
-        f"Diagnóstico diferencial orientativo: {diff_txt}.{markers_txt} "
+        f"Paciente: {alias}. Resumen: {base_summary}. "
+        f"Diferencial: {diff_txt}.{markers_txt} "
         f"Pregunta del médico: {payload.question}"
     )
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="OPENAI_API_KEY no está configurada en el backend.",
-        )
+        raise HTTPException(500, "OPENAI_API_KEY no está configurada en el backend.")
 
     client = OpenAI(api_key=api_key)
     text_model = os.getenv("GALENOS_TEXT_MODEL", "gpt-4o-mini")
@@ -567,20 +616,12 @@ async def analytics_chat(
         )
         answer = resp.choices[0].message.content
     except Exception as e:
-        print("[Analytics-Chat] Error al llamar a OpenAI:", repr(e))
-        raise HTTPException(
-            status_code=500,
-            detail="No se ha podido generar la respuesta de apoyo clínico para la analítica."
-        )
+        print("[Analytics-Chat] Error OpenAI:", repr(e))
+        raise HTTPException(500, "No se ha podido generar la respuesta de IA.")
 
     disclaimer = (
-        "Galenos.pro no diagnostica ni prescribe. Esta respuesta es un apoyo orientativo para el médico. "
-        "La interpretación final de la analítica corresponde siempre al médico responsable."
+        "Galenos.pro no diagnostica ni prescribe. Esta respuesta es un apoyo orientativo. "
+        "La interpretación final corresponde siempre al médico responsable."
     )
 
-    return JSONResponse(
-        {
-            "answer": answer,
-            "disclaimer": disclaimer,
-        }
-    )
+    return JSONResponse({"answer": answer, "disclaimer": disclaimer})
