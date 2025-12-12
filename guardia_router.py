@@ -5,10 +5,7 @@ from sqlalchemy import func
 from typing import Optional, List
 from pydantic import BaseModel
 from datetime import datetime
-import os
 import re
-
-from cryptography.fernet import Fernet
 
 from database import get_db
 from auth import get_current_user
@@ -18,40 +15,20 @@ router = APIRouter(prefix="/guard", tags=["guardia"])
 
 
 # ======================================================
-# Moderación y anonimización LOCAL (sin imports externos)
+# Anonimización básica (sin cifrado para GuardCase)
 # ======================================================
-def _get_fernet() -> Fernet:
-    key = os.getenv("FERNET_KEY")
-    if not key:
-        # fallback para no romper deploy (mejor poner FERNET_KEY fijo en Render)
-        key = Fernet.generate_key().decode("utf-8")
-    return Fernet(key.encode("utf-8"))
-
-
-def moderate_and_anonimize(text: str):
+def anonimize_text(text: str) -> str:
     text = (text or "").strip()
-    fernet = _get_fernet()
-
-    encrypted = (
-        fernet.encrypt(text.encode("utf-8")).decode("utf-8")
-        if text else ""
-    )
-
     clean = text
     clean = re.sub(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", "[email]", clean)
     clean = re.sub(r"\b\d{9}\b", "[teléfono]", clean)
     clean = re.sub(r"\b\d{7,8}[A-Za-z]\b", "[documento]", clean)
     clean = re.sub(r"\b\d{12,}\b", "[id]", clean)
-
-    return {
-        "clean_content": clean.strip(),
-        "encrypted_original": encrypted,
-        "moderation_status": "ok",
-    }
+    return clean.strip()
 
 
 # ======================================================
-# Schemas locales (blindados)
+# Schemas locales
 # ======================================================
 class GuardAttachment(BaseModel):
     kind: str  # "analytic" | "imaging"
@@ -97,20 +74,29 @@ def guard_attachment_options(
         .all()
     )
 
+    imaging_items = []
+    for i in imaging:
+        img_type = (
+            getattr(i, "img_type", None)
+            or getattr(i, "type", None)
+            or getattr(i, "study_type", None)
+            or "imagen"
+        )
+        imaging_items.append(
+            {"id": i.id, "type": img_type, "summary": getattr(i, "summary", "") or ""}
+        )
+
     return {
         "analytics": [
             {"id": a.id, "exam_date": a.exam_date, "summary": a.summary or ""}
             for a in analytics
         ],
-        "imaging": [
-            {"id": i.id, "type": i.img_type or "imagen", "summary": i.summary or ""}
-            for i in imaging
-        ],
+        "imaging": imaging_items,
     }
 
 
 # ======================================================
-# ✅ LISTAR CASOS (esto arregla el 405)
+# LISTAR CASOS
 # ======================================================
 @router.get("/cases")
 def list_guard_cases(
@@ -231,13 +217,13 @@ def create_case_message(
     if not c:
         raise HTTPException(404, "Caso no encontrado.")
 
-    clean = moderate_and_anonimize(payload.content)
+    clean_text = anonimize_text(payload.content)
 
     msg = GuardMessage(
         case_id=case_id,
         author_alias=payload.author_alias or "anónimo",
-        clean_content=clean["clean_content"],
-        moderation_status=clean["moderation_status"],
+        clean_content=clean_text,
+        moderation_status="ok",
         created_at=datetime.utcnow(),
     )
     db.add(msg)
@@ -258,7 +244,7 @@ def create_case_message(
 
 
 # ======================================================
-# CREAR CASO DE GUARDIA (con adjuntos opcionales)
+# CREAR CASO (con adjuntos opcionales)
 # ======================================================
 @router.post("/cases")
 def create_guard_case(
@@ -268,6 +254,7 @@ def create_guard_case(
 ):
     original_text = (payload.original or "").strip()
 
+    # Adjuntos seleccionados
     if payload.attachments:
         blocks = []
         for att in payload.attachments:
@@ -280,22 +267,27 @@ def create_guard_case(
             elif att.kind == "imaging":
                 i = db.query(Imaging).filter(Imaging.id == att.id).first()
                 if i:
+                    img_type = (
+                        getattr(i, "img_type", None)
+                        or getattr(i, "type", None)
+                        or getattr(i, "study_type", None)
+                        or "imagen"
+                    )
                     blocks.append(
-                        f"IMAGEN ({i.img_type or 'imagen'}):\n{i.summary or ''}"
+                        f"IMAGEN ({img_type}):\n{getattr(i, 'summary', '') or ''}"
                     )
 
         if blocks:
             original_text += (
-                "\n\nADJUNTOS CLÍNICOS (ANONIMIZADOS):\n"
-                + "\n\n".join(blocks)
+                "\n\nADJUNTOS CLÍNICOS (ANONIMIZADOS):\n" + "\n\n".join(blocks)
             )
 
-    clean = moderate_and_anonimize(original_text)
+    clean_text = anonimize_text(original_text)
 
+    # ⚠️ GuardCase NO admite original_encrypted → NO lo pasamos
     case = GuardCase(
         title=payload.title,
-        anonymized_summary=clean["clean_content"],
-        original_encrypted=clean["encrypted_original"],
+        anonymized_summary=clean_text,
         author_id=current_user.id,
         patient_id=payload.patient_id,
         status="open",
@@ -309,11 +301,12 @@ def create_guard_case(
     db.commit()
     db.refresh(case)
 
+    # Primer mensaje
     msg = GuardMessage(
         case_id=case.id,
         author_alias=payload.author_alias or "anónimo",
-        clean_content=clean["clean_content"],
-        moderation_status=clean["moderation_status"],
+        clean_content=clean_text,
+        moderation_status="ok",
         created_at=datetime.utcnow(),
     )
     db.add(msg)
