@@ -1,179 +1,134 @@
-// NuevaConsultaModal.jsx — De Guardia con adjuntos clínicos anonimizados
-import React, { useEffect, useState } from "react";
+# guardia_router.py — Módulo De Guardia con adjuntos clínicos anonimizados
 
-const API =
-  import.meta.env.VITE_API_URL || "https://galenos-backend.onrender.com";
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+from typing import Optional, List, Dict, Any
 
-export default function NuevaConsultaModal({ onClose, onCreated }) {
-  const token = localStorage.getItem("galenos_token");
+from database import get_db
+from auth import get_current_user
+from models import GuardCase, GuardMessage, Analytic, Imaging
+from schemas import GuardCaseCreate
+from utils_guardia import moderate_and_anonimize
 
-  const [title, setTitle] = useState("");
-  const [original, setOriginal] = useState("");
-  const [patientId, setPatientId] = useState("");
+router = APIRouter(prefix="/guard", tags=["guardia"])
 
-  const [attachments, setAttachments] = useState([]);
-  const [options, setOptions] = useState({ analytics: [], imaging: [] });
 
-  const [loadingOptions, setLoadingOptions] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
+# ======================================================
+# NUEVO: opciones de adjuntos clínicos (anonimizados)
+# ======================================================
+@router.get("/attachments/options")
+def guard_attachment_options(
+    patient_id: int = Query(...),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Devuelve analíticas e imágenes disponibles para adjuntar
+    (solo texto clínico, sin ficheros).
+    """
+    analytics = (
+        db.query(Analytic)
+        .filter(Analytic.patient_id == patient_id)
+        .order_by(Analytic.exam_date.desc().nullslast(), Analytic.created_at.desc())
+        .all()
+    )
 
-  // ==========================
-  // Cargar adjuntos disponibles
-  // ==========================
-  useEffect(() => {
-    if (!patientId) {
-      setOptions({ analytics: [], imaging: [] });
-      return;
+    imaging = (
+        db.query(Imaging)
+        .filter(Imaging.patient_id == patient_id)
+        .order_by(Imaging.created_at.desc())
+        .all()
+    )
+
+    return {
+        "analytics": [
+            {
+                "id": a.id,
+                "exam_date": a.exam_date,
+                "summary": a.summary,
+            }
+            for a in analytics
+        ],
+        "imaging": [
+            {
+                "id": i.id,
+                "type": i.img_type,
+                "summary": i.summary,
+            }
+            for i in imaging
+        ],
     }
 
-    const loadOptions = async () => {
-      setLoadingOptions(true);
-      try {
-        const res = await fetch(
-          `${API}/guard/attachments/options?patient_id=${patientId}`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        const data = await res.json();
-        setOptions(data);
-      } catch {
-        // silencioso
-      } finally {
-        setLoadingOptions(false);
-      }
-    };
 
-    loadOptions();
-  }, [patientId, token]);
+# ======================================================
+# CREAR CASO DE GUARDIA (con adjuntos opcionales)
+# ======================================================
+@router.post("/cases")
+def create_guard_case(
+    payload: GuardCaseCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Crea una consulta de guardia.
+    Puede incluir adjuntos clínicos anonimizados (analíticas / imágenes).
+    """
 
-  const toggleAttachment = (kind, id) => {
-    setAttachments((prev) => {
-      const exists = prev.find((a) => a.kind === kind && a.id === id);
-      if (exists) return prev.filter((a) => !(a.kind === kind && a.id === id));
-      return [...prev, { kind, id }];
-    });
-  };
+    original_text = payload.original or ""
 
-  // ==========================
-  // Enviar consulta
-  // ==========================
-  const submit = async () => {
-    setError("");
+    # ==========================
+    # Adjuntos clínicos (opcional)
+    # ==========================
+    if payload.attachments:
+        blocks = []
+        for att in payload.attachments:
+            if att.kind == "analytic":
+                a = db.query(Analytic).filter(Analytic.id == att.id).first()
+                if not a:
+                    continue
+                blocks.append(
+                    f"ANALÍTICA ({a.exam_date or 'fecha no especificada'}):\n{a.summary}"
+                )
 
-    if (!title.trim() || !original.trim()) {
-      setError("Título y texto son obligatorios.");
-      return;
-    }
+            if att.kind == "imaging":
+                i = db.query(Imaging).filter(Imaging.id == att.id).first()
+                if not i:
+                    continue
+                blocks.append(
+                    f"IMAGEN ({i.img_type}):\n{i.summary}"
+                )
 
-    try {
-      setSubmitting(true);
-      const res = await fetch(`${API}/guard/cases`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          title,
-          original,
-          patient_id: patientId || null,
-          attachments,
-        }),
-      });
+        if blocks:
+            original_text += "\n\nADJUNTOS CLÍNICOS (ANONIMIZADOS):\n" + "\n\n".join(blocks)
 
-      if (!res.ok) {
-        setError("No se pudo crear la consulta.");
-        return;
-      }
+    # ==========================
+    # Anonimización y moderación
+    # ==========================
+    clean = moderate_and_anonimize(original_text)
 
-      onCreated && onCreated();
-      onClose();
-    } catch {
-      setError("Error de conexión.");
-    } finally {
-      setSubmitting(false);
-    }
-  };
+    case = GuardCase(
+        title=payload.title,
+        anonymized_summary=clean["clean_content"],
+        original_encrypted=clean["encrypted_original"],
+        author_id=current_user.id,
+        patient_id=payload.patient_id,
+        status="open",
+        age_group=payload.age_group,
+        sex=payload.sex,
+        context=payload.context,
+    )
 
-  return (
-    <div className="modal">
-      <h2 className="text-lg font-semibold mb-2">Nueva consulta de diagnóstico</h2>
+    db.add(case)
+    db.commit()
+    db.refresh(case)
 
-      {error && <p className="text-sm text-red-600 mb-2">{error}</p>}
+    msg = GuardMessage(
+        case_id=case.id,
+        author_alias=payload.author_alias,
+        clean_content=clean["clean_content"],
+        moderation_status=clean["moderation_status"],
+    )
+    db.add(msg)
+    db.commit()
 
-      <input
-        className="sr-input w-full mb-2"
-        placeholder="Título"
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-      />
-
-      <textarea
-        className="sr-input w-full min-h-[120px] mb-2"
-        placeholder="Describe el caso clínico (sin datos identificativos)..."
-        value={original}
-        onChange={(e) => setOriginal(e.target.value)}
-      />
-
-      <input
-        className="sr-input w-full mb-2"
-        placeholder="ID interno del paciente (opcional)"
-        value={patientId}
-        onChange={(e) => setPatientId(e.target.value)}
-      />
-
-      {loadingOptions && (
-        <p className="text-xs text-gray-500">Cargando adjuntos clínicos…</p>
-      )}
-
-      {patientId && (
-        <div className="border rounded p-2 text-xs space-y-2 mb-2">
-          <p className="font-semibold">Adjuntar apoyo clínico (anonimizado)</p>
-
-          {options.analytics.length > 0 && (
-            <div>
-              <p className="font-medium">Analíticas</p>
-              {options.analytics.map((a) => (
-                <label key={a.id} className="flex gap-2">
-                  <input
-                    type="checkbox"
-                    onChange={() => toggleAttachment("analytic", a.id)}
-                  />
-                  {a.exam_date || "sin fecha"} — {a.summary.slice(0, 60)}…
-                </label>
-              ))}
-            </div>
-          )}
-
-          {options.imaging.length > 0 && (
-            <div>
-              <p className="font-medium">Imágenes</p>
-              {options.imaging.map((i) => (
-                <label key={i.id} className="flex gap-2">
-                  <input
-                    type="checkbox"
-                    onChange={() => toggleAttachment("imaging", i.id)}
-                  />
-                  {i.type} — {i.summary.slice(0, 60)}…
-                </label>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      <div className="flex justify-end gap-2">
-        <button onClick={onClose} className="sr-btn-secondary text-xs">
-          Cancelar
-        </button>
-        <button
-          onClick={submit}
-          disabled={submitting}
-          className="sr-btn-primary text-xs"
-        >
-          {submitting ? "Publicando…" : "Publicar consulta"}
-        </button>
-      </div>
-    </div>
-  );
-}
+    return case
