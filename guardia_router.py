@@ -229,7 +229,7 @@ def list_case_messages(
 
 
 # ======================================================
-# AÑADIR MENSAJE A UN CASO
+# AÑADIR MENSAJE A UN CASO ✅ FIXED
 # ======================================================
 @router.post("/cases/{case_id}/messages")
 def create_case_message(
@@ -249,22 +249,24 @@ def create_case_message(
     if not c:
         raise HTTPException(404, "Not Found")
 
-    clean = anonimize_text(payload.content)
+    raw_text = (payload.content or "").strip()
+    clean_text = anonimize_text(raw_text)
 
     msg = GuardMessage(
-    case_id=case.id,
-    user_id=current_user.id,
-    author_alias=payload.author_alias or "anónimo",
-    raw_content=original_text,
-    clean_content=clean_text,
-    moderation_status="ok",
-    created_at=datetime.utcnow(),
-)
-
+        case_id=case_id,
+        user_id=current_user.id,
+        author_alias=(payload.author_alias or "anónimo"),
+        raw_content=raw_text,
+        clean_content=clean_text,
+        moderation_status="ok",
+        created_at=datetime.utcnow(),
+    )
 
     db.add(msg)
+
     c.last_activity_at = datetime.utcnow()
     db.add(c)
+
     db.commit()
     db.refresh(msg)
 
@@ -286,7 +288,7 @@ def create_guard_case(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    original_text = payload.original or ""
+    original_text = (payload.original or "").strip()
 
     # Adjuntar resúmenes clínicos
     if payload.attachments:
@@ -324,7 +326,8 @@ def create_guard_case(
     db.commit()
     db.refresh(case)
 
-    msg = GuardMessage(
+    # Mensaje inicial del hilo
+    first_msg = GuardMessage(
         case_id=case.id,
         user_id=current_user.id,
         author_alias=payload.author_alias or "anónimo",
@@ -334,7 +337,7 @@ def create_guard_case(
         created_at=datetime.utcnow(),
     )
 
-    db.add(msg)
+    db.add(first_msg)
     db.commit()
 
     return case
