@@ -1,8 +1,12 @@
-# guardia_router.py — De Guardia (ESTABLE A + MODO B: adjuntos en chat)
-# - Alias siempre desde doctor_profile.guard_alias
-# - Mensajes robustos
-# - ✅ Modo B: adjuntos por mensaje (analytic / imaging)
-# - ✅ /guard/attachments/options?patient_id=... para UI de selección
+# guardia_router.py — De Guardia (NORA DE GUARDIA 13+ FINAL)
+# ✅ Mantiene:
+# - Adjuntos Modo B por mensaje (guard_message_attachments)
+# - /guard/attachments/options
+# - Casos + mensajes
+# ✅ Añade:
+# - ⭐ Favoritos persistentes (POST/DELETE /favorite)
+# - ✅ Resuelta (close/reopen)
+# - GET /guard/cases con favorites_only=true y is_favorite real
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -12,7 +16,7 @@ from typing import Optional, List, Dict, Any, Literal
 
 from database import get_db
 from auth import get_current_user
-from models import GuardCase, GuardMessage, DoctorProfile, Analytic, Imaging, Patient
+from models import GuardCase, GuardMessage, GuardFavorite, DoctorProfile, Analytic, Imaging, Patient
 
 import crud
 from pydantic import BaseModel, Field
@@ -29,25 +33,16 @@ class AttachmentIn(BaseModel):
 
 
 class GuardCaseCreateIn(BaseModel):
-    # Compatibilidad:
-    # - antiguo: content
-    # - nuevo frontend: original
     title: Optional[str] = None
     content: Optional[str] = None
     original: Optional[str] = None
 
-    # opcionales UI
     age_group: Optional[str] = None
     sex: Optional[str] = None
     context: Optional[str] = None
 
-    # vínculo a paciente (opcional)
     patient_id: Optional[int] = None
-
-    # compatibilidad: frontend puede mandar author_alias, pero NO lo usamos (alias sale del perfil)
     author_alias: Optional[str] = None
-
-    # adjuntos para el primer mensaje del caso
     attachments: Optional[List[AttachmentIn]] = None
 
 
@@ -70,7 +65,6 @@ def _now():
 
 
 def _extract_case_text(payload: GuardCaseCreateIn) -> str:
-    # Prioridad: content > original
     txt = (payload.content or "").strip()
     if not txt:
         txt = (payload.original or "").strip()
@@ -93,14 +87,9 @@ def _validate_attachments_belong_to_user(
     current_user_id: int,
     attachments: List[Dict[str, Any]],
 ):
-    """
-    Valida que los IDs referenciados pertenecen al médico actual.
-    Si algo no cuadra -> 400/404.
-    """
     if not attachments:
         return
 
-    # límites razonables (evita abuso y UI infinita)
     if len(attachments) > 8:
         raise HTTPException(400, "Demasiados adjuntos (máximo 8 por mensaje).")
 
@@ -108,7 +97,6 @@ def _validate_attachments_belong_to_user(
     imaging_ids = [a["id"] for a in attachments if a["kind"] == "imaging"]
 
     if analytic_ids:
-        # Analytic -> Patient.doctor_id
         rows = (
             db.query(Analytic.id)
             .join(Patient, Patient.id == Analytic.patient_id)
@@ -134,13 +122,9 @@ def _validate_attachments_belong_to_user(
 
 
 def _save_message_attachments(db: Session, message_id: int, attachments: List[Dict[str, Any]]):
-    """
-    Guarda adjuntos en tabla guard_message_attachments.
-    """
     if not attachments:
         return
 
-    # inserción simple (tabla no tiene modelo ORM)
     for a in attachments:
         db.execute(
             sql_text(
@@ -158,17 +142,9 @@ def _load_attachments_for_message_ids(
     message_ids: List[int],
     current_user_id: int,
 ) -> Dict[int, List[Dict[str, Any]]]:
-    """
-    Devuelve dict: message_id -> [attachments enriched]
-    Enrichment:
-      - analytic: exam_date, summary
-      - imaging: type, exam_date, summary, file_path (preview)
-    Seguridad: solo devuelve adjuntos que pertenezcan al médico actual.
-    """
     if not message_ids:
         return {}
 
-    # 1) leer referencias
     rows = db.execute(
         sql_text(
             """
@@ -193,7 +169,6 @@ def _load_attachments_for_message_ids(
         if kind in refs_by_kind:
             refs_by_kind[kind].add(rid)
 
-    # 2) cargar detalles autorizados
     analytics_map: Dict[int, Dict[str, Any]] = {}
     imaging_map: Dict[int, Dict[str, Any]] = {}
 
@@ -224,10 +199,9 @@ def _load_attachments_for_message_ids(
                 "type": (itype or "").strip(),
                 "exam_date": exam_date.isoformat() if exam_date else None,
                 "summary": (summary or "").strip(),
-                "file_path": file_path,  # suele ser data:image/... base64
+                "file_path": file_path,
             }
 
-    # 3) enriquecer y filtrar
     enriched: Dict[int, List[Dict[str, Any]]] = {}
     for mid, items in by_msg.items():
         out = []
@@ -236,19 +210,25 @@ def _load_attachments_for_message_ids(
             rid = a["id"]
             if kind == "analytic":
                 data = analytics_map.get(rid)
-                if not data:
-                    # si no está autorizado o no existe -> no lo devolvemos
-                    continue
-                out.append({"kind": "analytic", **data})
+                if data:
+                    out.append({"kind": "analytic", **data})
             elif kind == "imaging":
                 data = imaging_map.get(rid)
-                if not data:
-                    continue
-                out.append({"kind": "imaging", **data})
+                if data:
+                    out.append({"kind": "imaging", **data})
         if out:
             enriched[mid] = out
 
     return enriched
+
+
+def _is_favorite(db: Session, user_id: int, case_id: int) -> bool:
+    return (
+        db.query(GuardFavorite)
+        .filter(GuardFavorite.user_id == user_id, GuardFavorite.case_id == case_id)
+        .first()
+        is not None
+    )
 
 
 # ======================
@@ -291,17 +271,24 @@ def guard_attachment_options(
 
 
 # ======================
-# Listar casos
+# Listar casos (⭐ + filtro favorites_only)
 # ======================
 @router.get("/cases")
 def list_cases(
     status: Optional[str] = Query("open"),
+    favorites_only: bool = Query(False),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
     q = db.query(GuardCase).filter(GuardCase.user_id == current_user.id)
+
     if status and status != "all":
         q = q.filter(GuardCase.status == status)
+
+    if favorites_only:
+        q = q.join(GuardFavorite, GuardFavorite.case_id == GuardCase.id).filter(
+            GuardFavorite.user_id == current_user.id
+        )
 
     cases = q.order_by(GuardCase.last_activity_at.desc()).all()
 
@@ -315,11 +302,7 @@ def list_cases(
         )
         author_alias = first_msg.author_alias if first_msg else _get_guard_alias(db, current_user.id)
 
-        msg_count = (
-            db.query(GuardMessage)
-            .filter(GuardMessage.case_id == c.id)
-            .count()
-        )
+        msg_count = db.query(GuardMessage).filter(GuardMessage.case_id == c.id).count()
 
         items.append(
             {
@@ -333,7 +316,7 @@ def list_cases(
                 "age_group": c.age_group,
                 "sex": c.sex,
                 "context": c.context,
-                "is_favorite": False,
+                "is_favorite": _is_favorite(db, current_user.id, c.id),
             }
         )
 
@@ -341,38 +324,7 @@ def list_cases(
 
 
 # ======================
-# Detalle caso
-# ======================
-@router.get("/cases/{case_id}")
-def get_case(
-    case_id: int,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    c = (
-        db.query(GuardCase)
-        .filter(GuardCase.id == case_id, GuardCase.user_id == current_user.id)
-        .first()
-    )
-    if not c:
-        raise HTTPException(404, "Not Found")
-
-    return {
-        "id": c.id,
-        "title": c.title or "Consulta clínica sin título",
-        "anonymized_summary": c.anonymized_summary or "",
-        "status": c.status or "open",
-        "age_group": c.age_group,
-        "sex": c.sex,
-        "context": c.context,
-        "created_at": c.created_at,
-        "last_activity_at": c.last_activity_at,
-        "patient_ref_id": c.patient_ref_id,
-    }
-
-
-# ======================
-# Listar mensajes (✅ devuelve attachments)
+# Listar mensajes (con attachments)
 # ======================
 @router.get("/cases/{case_id}/messages")
 def list_messages(
@@ -414,7 +366,7 @@ def list_messages(
 
 
 # ======================
-# Crear caso (crea 1er mensaje + adjuntos opcionales)
+# Crear caso (1er mensaje + adjuntos)
 # ======================
 @router.post("/cases")
 def create_case(
@@ -428,7 +380,6 @@ def create_case(
     if not content:
         raise HTTPException(400, "Contenido vacío")
 
-    # patient_id opcional: debe pertenecer al médico
     patient_ref_id = None
     if payload.patient_id:
         patient = crud.get_patient_by_id(db, int(payload.patient_id), current_user.id)
@@ -439,7 +390,6 @@ def create_case(
     attachments = _attachments_to_list(payload.attachments)
     _validate_attachments_belong_to_user(db, current_user.id, attachments)
 
-    # Caso
     case = GuardCase(
         user_id=current_user.id,
         title=(payload.title or "").strip() or "Consulta clínica sin título",
@@ -456,7 +406,6 @@ def create_case(
     db.commit()
     db.refresh(case)
 
-    # Primer mensaje
     msg = GuardMessage(
         case_id=case.id,
         user_id=current_user.id,
@@ -470,7 +419,6 @@ def create_case(
     db.commit()
     db.refresh(msg)
 
-    # Adjuntos del caso -> se guardan en el 1er mensaje
     _save_message_attachments(db, msg.id, attachments)
     db.commit()
 
@@ -478,7 +426,7 @@ def create_case(
 
 
 # ======================
-# Añadir mensaje (✅ Modo B)
+# Añadir mensaje
 # ======================
 @router.post("/cases/{case_id}/messages")
 def add_message(
@@ -523,7 +471,6 @@ def add_message(
     _save_message_attachments(db, msg.id, attachments)
     db.commit()
 
-    # devolver mensaje ya enriquecido (útil para append en frontend)
     att_map = _load_attachments_for_message_ids(db, [msg.id], current_user.id)
 
     return {
@@ -534,3 +481,79 @@ def add_message(
         "created_at": msg.created_at,
         "attachments": att_map.get(msg.id, []),
     }
+
+
+# ======================
+# ⭐ Favoritos
+# ======================
+@router.post("/cases/{case_id}/favorite")
+def favorite_case(
+    case_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    c = db.query(GuardCase).filter(GuardCase.id == case_id, GuardCase.user_id == current_user.id).first()
+    if not c:
+        raise HTTPException(404, "Not Found")
+
+    if _is_favorite(db, current_user.id, case_id):
+        return {"ok": True}
+
+    fav = GuardFavorite(user_id=current_user.id, case_id=case_id, created_at=_now())
+    db.add(fav)
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/cases/{case_id}/favorite")
+def unfavorite_case(
+    case_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    fav = (
+        db.query(GuardFavorite)
+        .filter(GuardFavorite.user_id == current_user.id, GuardFavorite.case_id == case_id)
+        .first()
+    )
+    if fav:
+        db.delete(fav)
+        db.commit()
+    return {"ok": True}
+
+
+# ======================
+# ✅ Resuelta / Reabrir
+# ======================
+@router.post("/cases/{case_id}/close")
+def close_case(
+    case_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    c = db.query(GuardCase).filter(GuardCase.id == case_id, GuardCase.user_id == current_user.id).first()
+    if not c:
+        raise HTTPException(404, "Not Found")
+
+    c.status = "closed"
+    c.last_activity_at = _now()
+    db.add(c)
+    db.commit()
+    return {"ok": True, "status": "closed"}
+
+
+@router.post("/cases/{case_id}/reopen")
+def reopen_case(
+    case_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    c = db.query(GuardCase).filter(GuardCase.id == case_id, GuardCase.user_id == current_user.id).first()
+    if not c:
+        raise HTTPException(404, "Not Found")
+
+    c.status = "open"
+    c.last_activity_at = _now()
+    db.add(c)
+    db.commit()
+    return {"ok": True, "status": "open"}
