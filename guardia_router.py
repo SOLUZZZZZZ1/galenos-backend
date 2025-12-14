@@ -1,16 +1,14 @@
-# guardia_router.py — De Guardia (NORA DE GUARDIA 13+ FINAL SEGURO)
-# ✅ Mantiene:
-# - Adjuntos Modo B por mensaje (guard_message_attachments)
-# - /guard/attachments/options
-# - Casos + mensajes
-# ✅ Añade:
-# - ⭐ Favoritos persistentes (POST/DELETE /favorite) — SOLO casos propios
-# - ✅ Resuelta (close/reopen) — SOLO casos propios
-# - GET /guard/cases con favorites_only=true y is_favorite real
+# guardia_router.py — De Guardia (CARTELERA COMPARTIDA)
+# ✅ Público/privado por caso:
+# - visibility: "public" o "private"
+# - GET /guard/cases devuelve: (public) + (propios)
+# - close/reopen SOLO autor (owner)
+# - favoritos por usuario (para casos visibles)
+# - adjuntos Modo B siguen funcionando (pero SOLO puedes adjuntar cosas de tus pacientes)
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import text as sql_text
+from sqlalchemy import text as sql_text, or_
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Literal
 
@@ -42,8 +40,10 @@ class GuardCaseCreateIn(BaseModel):
     context: Optional[str] = None
 
     patient_id: Optional[int] = None
-    author_alias: Optional[str] = None
     attachments: Optional[List[AttachmentIn]] = None
+
+    # ✅ NUEVO: visibilidad (por defecto public)
+    visibility: Optional[Literal["public", "private"]] = "public"
 
 
 class GuardMessageCreateIn(BaseModel):
@@ -124,7 +124,6 @@ def _validate_attachments_belong_to_user(
 def _save_message_attachments(db: Session, message_id: int, attachments: List[Dict[str, Any]]):
     if not attachments:
         return
-
     for a in attachments:
         db.execute(
             sql_text(
@@ -231,19 +230,29 @@ def _is_favorite(db: Session, user_id: int, case_id: int) -> bool:
     )
 
 
-def _get_own_case_or_404(db: Session, case_id: int, user_id: int) -> GuardCase:
-    c = (
-        db.query(GuardCase)
-        .filter(GuardCase.id == case_id, GuardCase.user_id == user_id)
-        .first()
-    )
+def _get_visible_case_or_404(db: Session, case_id: int, current_user_id: int) -> GuardCase:
+    c = db.query(GuardCase).filter(GuardCase.id == case_id).first()
     if not c:
+        raise HTTPException(404, "Not Found")
+
+    # visible si es tuyo o es público
+    vis = getattr(c, "visibility", "public") or "public"
+    if c.user_id != current_user_id and vis != "public":
         raise HTTPException(404, "Not Found")
     return c
 
 
+def _require_owner(db: Session, case_id: int, current_user_id: int) -> GuardCase:
+    c = db.query(GuardCase).filter(GuardCase.id == case_id).first()
+    if not c:
+        raise HTTPException(404, "Not Found")
+    if c.user_id != current_user_id:
+        raise HTTPException(403, "Solo el autor puede realizar esta acción.")
+    return c
+
+
 # ======================
-# OPTIONS adjuntos por paciente (para UI)
+# OPTIONS adjuntos por paciente (solo para tus pacientes)
 # ======================
 @router.get("/attachments/options")
 def guard_attachment_options(
@@ -261,28 +270,19 @@ def guard_attachment_options(
     return {
         "patient_id": patient_id,
         "analytics": [
-            {
-                "id": a.id,
-                "exam_date": a.exam_date.isoformat() if a.exam_date else None,
-                "summary": (a.summary or ""),
-            }
+            {"id": a.id, "exam_date": a.exam_date.isoformat() if a.exam_date else None, "summary": (a.summary or "")}
             for a in (analytics or [])
         ],
         "imaging": [
-            {
-                "id": i.id,
-                "type": i.type,
-                "exam_date": i.exam_date.isoformat() if i.exam_date else None,
-                "summary": (i.summary or ""),
-                "file_path": i.file_path,
-            }
+            {"id": i.id, "type": i.type, "exam_date": i.exam_date.isoformat() if i.exam_date else None, "summary": (i.summary or ""), "file_path": i.file_path}
             for i in (imaging or [])
         ],
     }
 
 
 # ======================
-# Listar casos (solo tuyos) + favorites_only
+# GET /guard/cases — cartelera compartida
+# Devuelve: casos públicos + tus casos privados
 # ======================
 @router.get("/cases")
 def list_cases(
@@ -291,7 +291,13 @@ def list_cases(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    q = db.query(GuardCase).filter(GuardCase.user_id == current_user.id)
+    # visibles: public OR owner
+    q = db.query(GuardCase).filter(
+        or_(
+            GuardCase.user_id == current_user.id,
+            getattr(GuardCase, "visibility") == "public",
+        )
+    )
 
     if status and status != "all":
         q = q.filter(GuardCase.status == status)
@@ -305,13 +311,15 @@ def list_cases(
 
     items = []
     for c in cases:
+        # autor: alias del primer mensaje si existe; si no, alias del owner
         first_msg = (
             db.query(GuardMessage)
             .filter(GuardMessage.case_id == c.id)
             .order_by(GuardMessage.id.asc())
             .first()
         )
-        author_alias = first_msg.author_alias if first_msg else _get_guard_alias(db, current_user.id)
+        author_alias = first_msg.author_alias if first_msg else _get_guard_alias(db, c.user_id)
+
         msg_count = db.query(GuardMessage).filter(GuardMessage.case_id == c.id).count()
 
         items.append(
@@ -327,6 +335,8 @@ def list_cases(
                 "sex": c.sex,
                 "context": c.context,
                 "is_favorite": _is_favorite(db, current_user.id, c.id),
+                "visibility": getattr(c, "visibility", "public") or "public",
+                "is_owner": (c.user_id == current_user.id),
             }
         )
 
@@ -334,7 +344,7 @@ def list_cases(
 
 
 # ======================
-# Listar mensajes (con attachments) — solo si el caso es tuyo
+# Mensajes — visible si public o owner
 # ======================
 @router.get("/cases/{case_id}/messages")
 def list_messages(
@@ -342,7 +352,7 @@ def list_messages(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    _get_own_case_or_404(db, case_id, current_user.id)
+    c = _get_visible_case_or_404(db, case_id, current_user.id)
 
     msgs = (
         db.query(GuardMessage)
@@ -351,6 +361,7 @@ def list_messages(
         .all()
     )
 
+    # adjuntos: solo enriquecemos si pertenecen al usuario (por privacidad/pacientes)
     msg_ids = [m.id for m in msgs]
     att_map = _load_attachments_for_message_ids(db, msg_ids, current_user.id)
 
@@ -365,12 +376,17 @@ def list_messages(
                 "attachments": att_map.get(m.id, []),
             }
             for m in msgs
-        ]
+        ],
+        "case": {
+            "id": c.id,
+            "visibility": getattr(c, "visibility", "public") or "public",
+            "is_owner": (c.user_id == current_user.id),
+        }
     }
 
 
 # ======================
-# Crear caso (tuyo)
+# Crear caso — por defecto public
 # ======================
 @router.post("/cases")
 def create_case(
@@ -393,6 +409,10 @@ def create_case(
     attachments = _attachments_to_list(payload.attachments)
     _validate_attachments_belong_to_user(db, current_user.id, attachments)
 
+    visibility = payload.visibility or "public"
+    if visibility not in ["public", "private"]:
+        visibility = "public"
+
     case = GuardCase(
         user_id=current_user.id,
         title=(payload.title or "").strip() or "Consulta clínica sin título",
@@ -405,6 +425,10 @@ def create_case(
         created_at=_now(),
         last_activity_at=_now(),
     )
+    # si el modelo tiene la columna visibility (la añadiremos en migración)
+    if hasattr(case, "visibility"):
+        setattr(case, "visibility", visibility)
+
     db.add(case)
     db.commit()
     db.refresh(case)
@@ -429,7 +453,7 @@ def create_case(
 
 
 # ======================
-# Añadir mensaje — solo si el caso es tuyo
+# Añadir mensaje — visible si public o owner
 # ======================
 @router.post("/cases/{case_id}/messages")
 def add_message(
@@ -438,7 +462,7 @@ def add_message(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    _get_own_case_or_404(db, case_id, current_user.id)
+    c = _get_visible_case_or_404(db, case_id, current_user.id)
 
     alias = _get_guard_alias(db, current_user.id)
     text = (payload.content or "").strip()
@@ -446,6 +470,7 @@ def add_message(
         raise HTTPException(400, "Contenido vacío")
 
     attachments = _attachments_to_list(payload.attachments)
+    # solo puedes adjuntar cosas de tus pacientes
     _validate_attachments_belong_to_user(db, current_user.id, attachments)
 
     msg = GuardMessage(
@@ -459,10 +484,8 @@ def add_message(
     )
     db.add(msg)
 
-    c = db.query(GuardCase).filter(GuardCase.id == case_id).first()
-    if c:
-        c.last_activity_at = _now()
-        db.add(c)
+    c.last_activity_at = _now()
+    db.add(c)
 
     db.commit()
     db.refresh(msg)
@@ -483,7 +506,7 @@ def add_message(
 
 
 # ======================
-# ⭐ Favoritos — SOLO casos tuyos
+# ⭐ Favoritos — para cualquier caso visible
 # ======================
 @router.post("/cases/{case_id}/favorite")
 def favorite_case(
@@ -491,7 +514,7 @@ def favorite_case(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    _get_own_case_or_404(db, case_id, current_user.id)
+    _get_visible_case_or_404(db, case_id, current_user.id)
 
     if _is_favorite(db, current_user.id, case_id):
         return {"ok": True}
@@ -508,7 +531,7 @@ def unfavorite_case(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    _get_own_case_or_404(db, case_id, current_user.id)
+    _get_visible_case_or_404(db, case_id, current_user.id)
 
     fav = (
         db.query(GuardFavorite)
@@ -522,7 +545,7 @@ def unfavorite_case(
 
 
 # ======================
-# ✅ Resuelta / Reabrir — SOLO casos tuyos
+# ✅ Resuelta / Reabrir — SOLO autor
 # ======================
 @router.post("/cases/{case_id}/close")
 def close_case(
@@ -530,7 +553,7 @@ def close_case(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    c = _get_own_case_or_404(db, case_id, current_user.id)
+    c = _require_owner(db, case_id, current_user.id)
     c.status = "closed"
     c.last_activity_at = _now()
     db.add(c)
@@ -544,7 +567,7 @@ def reopen_case(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    c = _get_own_case_or_404(db, case_id, current_user.id)
+    c = _require_owner(db, case_id, current_user.id)
     c.status = "open"
     c.last_activity_at = _now()
     db.add(c)
