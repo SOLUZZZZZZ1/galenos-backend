@@ -1,18 +1,21 @@
-# guardia_router.py — De Guardia (ESTABLE A: sin adjuntos)
+# guardia_router.py — De Guardia (ESTABLE A + MODO B: adjuntos en chat)
 # - Alias siempre desde doctor_profile.guard_alias
 # - Mensajes robustos
-# - Sin rutas duplicadas ni variables inconsistentes
+# - ✅ Modo B: adjuntos por mensaje (analytic / imaging)
+# - ✅ /guard/attachments/options?patient_id=... para UI de selección
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import text as sql_text
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict, Any, Literal
 
 from database import get_db
 from auth import get_current_user
-from models import GuardCase, GuardMessage, DoctorProfile
+from models import GuardCase, GuardMessage, DoctorProfile, Analytic, Imaging, Patient
 
-from pydantic import BaseModel
+import crud
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/guard", tags=["guardia"])
 
@@ -20,16 +23,37 @@ router = APIRouter(prefix="/guard", tags=["guardia"])
 # ======================
 # Schemas entrada
 # ======================
+class AttachmentIn(BaseModel):
+    kind: Literal["analytic", "imaging"]
+    id: int = Field(..., ge=1)
+
+
 class GuardCaseCreateIn(BaseModel):
-    title: str
-    content: str
+    # Compatibilidad:
+    # - antiguo: content
+    # - nuevo frontend: original
+    title: Optional[str] = None
+    content: Optional[str] = None
+    original: Optional[str] = None
+
+    # opcionales UI
     age_group: Optional[str] = None
     sex: Optional[str] = None
     context: Optional[str] = None
 
+    # vínculo a paciente (opcional)
+    patient_id: Optional[int] = None
+
+    # compatibilidad: frontend puede mandar author_alias, pero NO lo usamos (alias sale del perfil)
+    author_alias: Optional[str] = None
+
+    # adjuntos para el primer mensaje del caso
+    attachments: Optional[List[AttachmentIn]] = None
+
 
 class GuardMessageCreateIn(BaseModel):
     content: str
+    attachments: Optional[List[AttachmentIn]] = None
 
 
 # ======================
@@ -45,6 +69,227 @@ def _now():
     return datetime.utcnow()
 
 
+def _extract_case_text(payload: GuardCaseCreateIn) -> str:
+    # Prioridad: content > original
+    txt = (payload.content or "").strip()
+    if not txt:
+        txt = (payload.original or "").strip()
+    return txt
+
+
+def _attachments_to_list(payload_list: Optional[List[AttachmentIn]]) -> List[Dict[str, Any]]:
+    if not payload_list:
+        return []
+    out = []
+    for a in payload_list:
+        if not a:
+            continue
+        out.append({"kind": a.kind, "id": int(a.id)})
+    return out
+
+
+def _validate_attachments_belong_to_user(
+    db: Session,
+    current_user_id: int,
+    attachments: List[Dict[str, Any]],
+):
+    """
+    Valida que los IDs referenciados pertenecen al médico actual.
+    Si algo no cuadra -> 400/404.
+    """
+    if not attachments:
+        return
+
+    # límites razonables (evita abuso y UI infinita)
+    if len(attachments) > 8:
+        raise HTTPException(400, "Demasiados adjuntos (máximo 8 por mensaje).")
+
+    analytic_ids = [a["id"] for a in attachments if a["kind"] == "analytic"]
+    imaging_ids = [a["id"] for a in attachments if a["kind"] == "imaging"]
+
+    if analytic_ids:
+        # Analytic -> Patient.doctor_id
+        rows = (
+            db.query(Analytic.id)
+            .join(Patient, Patient.id == Analytic.patient_id)
+            .filter(Analytic.id.in_(analytic_ids), Patient.doctor_id == current_user_id)
+            .all()
+        )
+        allowed = {r[0] for r in rows}
+        for aid in analytic_ids:
+            if aid not in allowed:
+                raise HTTPException(404, f"Analítica no encontrada o no autorizada (id={aid}).")
+
+    if imaging_ids:
+        rows = (
+            db.query(Imaging.id)
+            .join(Patient, Patient.id == Imaging.patient_id)
+            .filter(Imaging.id.in_(imaging_ids), Patient.doctor_id == current_user_id)
+            .all()
+        )
+        allowed = {r[0] for r in rows}
+        for iid in imaging_ids:
+            if iid not in allowed:
+                raise HTTPException(404, f"Imagen no encontrada o no autorizada (id={iid}).")
+
+
+def _save_message_attachments(db: Session, message_id: int, attachments: List[Dict[str, Any]]):
+    """
+    Guarda adjuntos en tabla guard_message_attachments.
+    """
+    if not attachments:
+        return
+
+    # inserción simple (tabla no tiene modelo ORM)
+    for a in attachments:
+        db.execute(
+            sql_text(
+                """
+                INSERT INTO guard_message_attachments (message_id, kind, ref_id)
+                VALUES (:mid, :kind, :rid)
+                """
+            ),
+            {"mid": message_id, "kind": a["kind"], "rid": a["id"]},
+        )
+
+
+def _load_attachments_for_message_ids(
+    db: Session,
+    message_ids: List[int],
+    current_user_id: int,
+) -> Dict[int, List[Dict[str, Any]]]:
+    """
+    Devuelve dict: message_id -> [attachments enriched]
+    Enrichment:
+      - analytic: exam_date, summary
+      - imaging: type, exam_date, summary, file_path (preview)
+    Seguridad: solo devuelve adjuntos que pertenezcan al médico actual.
+    """
+    if not message_ids:
+        return {}
+
+    # 1) leer referencias
+    rows = db.execute(
+        sql_text(
+            """
+            SELECT message_id, kind, ref_id
+            FROM guard_message_attachments
+            WHERE message_id = ANY(:ids)
+            """
+        ),
+        {"ids": message_ids},
+    ).fetchall()
+
+    if not rows:
+        return {}
+
+    refs_by_kind = {"analytic": set(), "imaging": set()}
+    by_msg: Dict[int, List[Dict[str, Any]]] = {}
+    for r in rows:
+        mid = int(r[0])
+        kind = str(r[1])
+        rid = int(r[2])
+        by_msg.setdefault(mid, []).append({"kind": kind, "id": rid})
+        if kind in refs_by_kind:
+            refs_by_kind[kind].add(rid)
+
+    # 2) cargar detalles autorizados
+    analytics_map: Dict[int, Dict[str, Any]] = {}
+    imaging_map: Dict[int, Dict[str, Any]] = {}
+
+    if refs_by_kind["analytic"]:
+        arows = (
+            db.query(Analytic.id, Analytic.exam_date, Analytic.summary)
+            .join(Patient, Patient.id == Analytic.patient_id)
+            .filter(Analytic.id.in_(list(refs_by_kind["analytic"])), Patient.doctor_id == current_user_id)
+            .all()
+        )
+        for (aid, exam_date, summary) in arows:
+            analytics_map[int(aid)] = {
+                "id": int(aid),
+                "exam_date": exam_date.isoformat() if exam_date else None,
+                "summary": (summary or "").strip(),
+            }
+
+    if refs_by_kind["imaging"]:
+        irows = (
+            db.query(Imaging.id, Imaging.type, Imaging.exam_date, Imaging.summary, Imaging.file_path)
+            .join(Patient, Patient.id == Imaging.patient_id)
+            .filter(Imaging.id.in_(list(refs_by_kind["imaging"])), Patient.doctor_id == current_user_id)
+            .all()
+        )
+        for (iid, itype, exam_date, summary, file_path) in irows:
+            imaging_map[int(iid)] = {
+                "id": int(iid),
+                "type": (itype or "").strip(),
+                "exam_date": exam_date.isoformat() if exam_date else None,
+                "summary": (summary or "").strip(),
+                "file_path": file_path,  # suele ser data:image/... base64
+            }
+
+    # 3) enriquecer y filtrar
+    enriched: Dict[int, List[Dict[str, Any]]] = {}
+    for mid, items in by_msg.items():
+        out = []
+        for a in items:
+            kind = a["kind"]
+            rid = a["id"]
+            if kind == "analytic":
+                data = analytics_map.get(rid)
+                if not data:
+                    # si no está autorizado o no existe -> no lo devolvemos
+                    continue
+                out.append({"kind": "analytic", **data})
+            elif kind == "imaging":
+                data = imaging_map.get(rid)
+                if not data:
+                    continue
+                out.append({"kind": "imaging", **data})
+        if out:
+            enriched[mid] = out
+
+    return enriched
+
+
+# ======================
+# OPTIONS adjuntos por paciente (para UI)
+# ======================
+@router.get("/attachments/options")
+def guard_attachment_options(
+    patient_id: int = Query(..., ge=1),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    patient = crud.get_patient_by_id(db, patient_id, current_user.id)
+    if not patient:
+        raise HTTPException(404, "Paciente no encontrado o no pertenece al usuario.")
+
+    analytics = crud.get_analytics_for_patient(db, patient_id=patient_id)
+    imaging = crud.get_imaging_for_patient(db, patient_id=patient_id)
+
+    return {
+        "patient_id": patient_id,
+        "analytics": [
+            {
+                "id": a.id,
+                "exam_date": a.exam_date.isoformat() if a.exam_date else None,
+                "summary": (a.summary or ""),
+            }
+            for a in (analytics or [])
+        ],
+        "imaging": [
+            {
+                "id": i.id,
+                "type": i.type,
+                "exam_date": i.exam_date.isoformat() if i.exam_date else None,
+                "summary": (i.summary or ""),
+                "file_path": i.file_path,
+            }
+            for i in (imaging or [])
+        ],
+    }
+
+
 # ======================
 # Listar casos
 # ======================
@@ -55,14 +300,13 @@ def list_cases(
     current_user=Depends(get_current_user),
 ):
     q = db.query(GuardCase).filter(GuardCase.user_id == current_user.id)
-    if status:
+    if status and status != "all":
         q = q.filter(GuardCase.status == status)
 
     cases = q.order_by(GuardCase.last_activity_at.desc()).all()
 
     items = []
     for c in cases:
-        # primer mensaje para alias
         first_msg = (
             db.query(GuardMessage)
             .filter(GuardMessage.case_id == c.id)
@@ -123,11 +367,12 @@ def get_case(
         "context": c.context,
         "created_at": c.created_at,
         "last_activity_at": c.last_activity_at,
+        "patient_ref_id": c.patient_ref_id,
     }
 
 
 # ======================
-# Listar mensajes
+# Listar mensajes (✅ devuelve attachments)
 # ======================
 @router.get("/cases/{case_id}/messages")
 def list_messages(
@@ -150,6 +395,9 @@ def list_messages(
         .all()
     )
 
+    msg_ids = [m.id for m in msgs]
+    att_map = _load_attachments_for_message_ids(db, msg_ids, current_user.id)
+
     return {
         "items": [
             {
@@ -158,6 +406,7 @@ def list_messages(
                 "clean_content": m.clean_content or "",
                 "moderation_status": m.moderation_status or "ok",
                 "created_at": m.created_at,
+                "attachments": att_map.get(m.id, []),
             }
             for m in msgs
         ]
@@ -165,7 +414,7 @@ def list_messages(
 
 
 # ======================
-# Crear caso (crea 1er mensaje)
+# Crear caso (crea 1er mensaje + adjuntos opcionales)
 # ======================
 @router.post("/cases")
 def create_case(
@@ -174,9 +423,21 @@ def create_case(
     current_user=Depends(get_current_user),
 ):
     alias = _get_guard_alias(db, current_user.id)
-    content = (payload.content or "").strip()
+
+    content = _extract_case_text(payload)
     if not content:
         raise HTTPException(400, "Contenido vacío")
+
+    # patient_id opcional: debe pertenecer al médico
+    patient_ref_id = None
+    if payload.patient_id:
+        patient = crud.get_patient_by_id(db, int(payload.patient_id), current_user.id)
+        if not patient:
+            raise HTTPException(404, "Paciente no encontrado o no pertenece al usuario.")
+        patient_ref_id = int(payload.patient_id)
+
+    attachments = _attachments_to_list(payload.attachments)
+    _validate_attachments_belong_to_user(db, current_user.id, attachments)
 
     # Caso
     case = GuardCase(
@@ -184,7 +445,7 @@ def create_case(
         title=(payload.title or "").strip() or "Consulta clínica sin título",
         anonymized_summary=content,
         status="open",
-        patient_ref_id=None,
+        patient_ref_id=patient_ref_id,
         age_group=payload.age_group,
         sex=payload.sex,
         context=payload.context,
@@ -207,12 +468,17 @@ def create_case(
     )
     db.add(msg)
     db.commit()
+    db.refresh(msg)
+
+    # Adjuntos del caso -> se guardan en el 1er mensaje
+    _save_message_attachments(db, msg.id, attachments)
+    db.commit()
 
     return {"id": case.id}
 
 
 # ======================
-# Añadir mensaje
+# Añadir mensaje (✅ Modo B)
 # ======================
 @router.post("/cases/{case_id}/messages")
 def add_message(
@@ -234,6 +500,9 @@ def add_message(
     if not text:
         raise HTTPException(400, "Contenido vacío")
 
+    attachments = _attachments_to_list(payload.attachments)
+    _validate_attachments_belong_to_user(db, current_user.id, attachments)
+
     msg = GuardMessage(
         case_id=case_id,
         user_id=current_user.id,
@@ -251,10 +520,17 @@ def add_message(
     db.commit()
     db.refresh(msg)
 
+    _save_message_attachments(db, msg.id, attachments)
+    db.commit()
+
+    # devolver mensaje ya enriquecido (útil para append en frontend)
+    att_map = _load_attachments_for_message_ids(db, [msg.id], current_user.id)
+
     return {
         "id": msg.id,
         "author_alias": msg.author_alias,
         "clean_content": msg.clean_content,
         "moderation_status": msg.moderation_status,
         "created_at": msg.created_at,
+        "attachments": att_map.get(msg.id, []),
     }

@@ -13,10 +13,9 @@ def _auth(x_admin_token: str | None):
         raise HTTPException(401, "Unauthorized")
 
 
-# -------------------------
-# TABLAS
-# -------------------------
-
+# =========================
+# USUARIOS
+# =========================
 SQL_USERS = """
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
@@ -33,7 +32,10 @@ CREATE TABLE IF NOT EXISTS users (
 );
 """
 
-# 🔹 PERFIL MÉDICO (NUEVO)
+
+# =========================
+# PERFIL MÉDICO
+# =========================
 SQL_DOCTOR_PROFILES = """
 CREATE TABLE IF NOT EXISTS doctor_profiles (
     id SERIAL PRIMARY KEY,
@@ -49,6 +51,131 @@ CREATE TABLE IF NOT EXISTS doctor_profiles (
 );
 """
 
-# 🔹 EXTENSIÓN PERFIL: alias de guardia
+
 SQL_DOCTOR_PROFILES_ALTER = """
-ALTER T
+ALTER TABLE doctor_profiles
+    ADD COLUMN IF NOT EXISTS guard_alias TEXT;
+
+ALTER TABLE doctor_profiles
+    ADD COLUMN IF NOT EXISTS guard_alias_locked INTEGER DEFAULT 0;
+"""
+
+
+# =========================
+# PACIENTES
+# =========================
+SQL_PATIENTS = """
+CREATE TABLE IF NOT EXISTS patients (
+    id SERIAL PRIMARY KEY,
+    doctor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    alias TEXT NOT NULL,
+    age INTEGER,
+    gender TEXT,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+
+SQL_PATIENTS_ALTER = """
+ALTER TABLE patients
+    ADD COLUMN IF NOT EXISTS patient_number INTEGER;
+"""
+
+
+SQL_PATIENTS_BACKFILL = """
+WITH ordered AS (
+    SELECT
+        id,
+        doctor_id,
+        ROW_NUMBER() OVER (
+            PARTITION BY doctor_id
+            ORDER BY created_at ASC, id ASC
+        ) AS rn
+    FROM patients
+)
+UPDATE patients p
+SET patient_number = o.rn
+FROM ordered o
+WHERE p.id = o.id
+  AND (p.patient_number IS NULL OR p.patient_number = 0);
+"""
+
+
+# =========================
+# ANALÍTICAS
+# =========================
+SQL_ANALYTICS = """
+CREATE TABLE IF NOT EXISTS analytics (
+    id SERIAL PRIMARY KEY,
+    patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+    summary TEXT,
+    differential TEXT,
+    file_path TEXT,
+    file_hash TEXT,
+    exam_date DATE,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+
+SQL_ANALYTIC_MARKERS = """
+CREATE TABLE IF NOT EXISTS analytic_markers (
+    id SERIAL PRIMARY KEY,
+    analytic_id INTEGER NOT NULL REFERENCES analytics(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    value DOUBLE PRECISION,
+    unit TEXT,
+    ref_min DOUBLE PRECISION,
+    ref_max DOUBLE PRECISION
+);
+"""
+
+
+# =========================
+# IMAGING
+# =========================
+SQL_IMAGING = """
+CREATE TABLE IF NOT EXISTS imaging (
+    id SERIAL PRIMARY KEY,
+    patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+    type TEXT,
+    summary TEXT,
+    differential TEXT,
+    file_path TEXT,
+    file_hash TEXT,
+    exam_date DATE,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+
+SQL_IMAGING_PATTERNS = """
+CREATE TABLE IF NOT EXISTS imaging_patterns (
+    id SERIAL PRIMARY KEY,
+    imaging_id INTEGER NOT NULL REFERENCES imaging(id) ON DELETE CASCADE,
+    pattern_text TEXT NOT NULL
+);
+"""
+
+
+# =========================
+# NOTAS CLÍNICAS
+# =========================
+SQL_CLINICAL_NOTES = """
+CREATE TABLE IF NOT EXISTS clinical_notes (
+    id SERIAL PRIMARY KEY,
+    patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+    doctor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+
+# =========================
+# TIMELINE
+# =========================
+SQL_TIMELINE_ITEMS = """
+CREATE T
