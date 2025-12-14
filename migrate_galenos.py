@@ -7,15 +7,13 @@ router = APIRouter(prefix="/admin/migrate-galenos", tags=["admin-migrate-galenos
 
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "GalenosAdminToken@123"
 
+MIGRATE_GALENOS_VERSION = "SAFE_NO_TRIPLE_QUOTES_V2"
+
 
 def _auth(x_admin_token: str | None):
     if x_admin_token != ADMIN_TOKEN:
         raise HTTPException(401, "Unauthorized")
 
-
-# =========================
-# SQL (sin triple comillas)
-# =========================
 
 SQL_USERS = (
     "CREATE TABLE IF NOT EXISTS users ("
@@ -76,18 +74,6 @@ SQL_ANALYTICS = (
     ");"
 )
 
-SQL_ANALYTIC_MARKERS = (
-    "CREATE TABLE IF NOT EXISTS analytic_markers ("
-    "id SERIAL PRIMARY KEY,"
-    "analytic_id INTEGER NOT NULL REFERENCES analytics(id) ON DELETE CASCADE,"
-    "name TEXT NOT NULL,"
-    "value DOUBLE PRECISION,"
-    "unit TEXT,"
-    "ref_min DOUBLE PRECISION,"
-    "ref_max DOUBLE PRECISION"
-    ");"
-)
-
 SQL_IMAGING = (
     "CREATE TABLE IF NOT EXISTS imaging ("
     "id SERIAL PRIMARY KEY,"
@@ -99,14 +85,6 @@ SQL_IMAGING = (
     "file_hash TEXT,"
     "exam_date DATE,"
     "created_at TIMESTAMP DEFAULT NOW()"
-    ");"
-)
-
-SQL_IMAGING_PATTERNS = (
-    "CREATE TABLE IF NOT EXISTS imaging_patterns ("
-    "id SERIAL PRIMARY KEY,"
-    "imaging_id INTEGER NOT NULL REFERENCES imaging(id) ON DELETE CASCADE,"
-    "pattern_text TEXT NOT NULL"
     ");"
 )
 
@@ -131,7 +109,10 @@ SQL_TIMELINE_ITEMS = (
     ");"
 )
 
-# ✅ GUARDIA (con visibility)
+# =========================
+# GUARDIA (COMPARTIDA)
+# =========================
+
 SQL_GUARD_CASES = (
     "CREATE TABLE IF NOT EXISTS guard_cases ("
     "id SERIAL PRIMARY KEY,"
@@ -149,7 +130,6 @@ SQL_GUARD_CASES = (
     ");"
 )
 
-# ✅ Si la tabla ya existía antes, añadimos la columna (idempotente)
 SQL_GUARD_CASES_ALTER_VISIBILITY = (
     "ALTER TABLE guard_cases "
     "ADD COLUMN IF NOT EXISTS visibility TEXT DEFAULT 'public';"
@@ -199,15 +179,10 @@ def migrate_init(x_admin_token: str | None = Header(None)):
             conn.execute(text(SQL_PATIENTS))
 
             conn.execute(text(SQL_ANALYTICS))
-            conn.execute(text(SQL_ANALYTIC_MARKERS))
-
             conn.execute(text(SQL_IMAGING))
-            conn.execute(text(SQL_IMAGING_PATTERNS))
-
             conn.execute(text(SQL_CLINICAL_NOTES))
             conn.execute(text(SQL_TIMELINE_ITEMS))
 
-            # Guardia
             conn.execute(text(SQL_GUARD_CASES))
             conn.execute(text(SQL_GUARD_CASES_ALTER_VISIBILITY))
             conn.execute(text(SQL_GUARD_MESSAGES))
@@ -216,7 +191,8 @@ def migrate_init(x_admin_token: str | None = Header(None)):
 
         return {
             "status": "ok",
-            "message": "Migración aplicada: guard_cases.visibility (public/private) + tablas guardia/adjuntos OK.",
+            "version": MIGRATE_GALENOS_VERSION,
+            "message": "Migración aplicada: guardia compartida + visibility + favoritos."
         }
 
     except Exception as e:

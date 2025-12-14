@@ -18,24 +18,20 @@ class User(Base):
     last_login = Column(DateTime)
     is_active = Column(Integer, default=1)
 
-    # PRO / Stripe
     is_pro = Column(Integer, default=0)
     stripe_customer_id = Column(String)
     stripe_subscription_id = Column(String)
     trial_end = Column(DateTime)
 
-    # Relaciones
     patients = relationship("Patient", back_populates="doctor")
     cancellations = relationship("CancellationReason", back_populates="user")
 
-    # 🔹 Perfil médico 1-1
     doctor_profile = relationship(
         "DoctorProfile",
         back_populates="user",
         uselist=False,
     )
 
-    # 🔹 Invitaciones creadas por este usuario (opcional)
     invitations_created = relationship(
         "Invitation",
         back_populates="created_by",
@@ -57,11 +53,10 @@ class DoctorProfile(Base):
     specialty = Column(String(120))
     colegiado_number = Column(String(50))
     phone = Column(String(30))
-    center = Column(String(150))   # hospital/centro de trabajo
+    center = Column(String(150))
     city = Column(String(120))
-    bio = Column(Text)             # breve descripción / presentación
+    bio = Column(Text)
 
-    # Alias para módulo De Guardia
     guard_alias = Column(String(80))
     guard_alias_locked = Column(Integer, default=0)
 
@@ -81,8 +76,6 @@ class Patient(Base):
     gender = Column(String)
     notes = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
-
-    # Número clínico por médico (1,2,3…)
     patient_number = Column(Integer)
 
     doctor = relationship("User", back_populates="patients")
@@ -187,61 +180,6 @@ class TimelineItem(Base):
 
 
 # =========================
-# MOTIVOS DE CANCELACIÓN
-# =========================
-class CancellationReason(Base):
-    __tablename__ = "cancellation_reasons"
-
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    reason_category = Column(String)
-    reason_text = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    user = relationship("User", back_populates="cancellations")
-
-
-# =========================
-# INVITATIONS
-# =========================
-class Invitation(Base):
-    __tablename__ = "invitations"
-
-    id = Column(Integer, primary_key=True)
-    token = Column(String, unique=True, nullable=False, index=True)
-    email = Column(String, nullable=True)
-    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    used = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    expires_at = Column(DateTime, nullable=True)
-
-    created_by = relationship(
-        "User",
-        back_populates="invitations_created",
-        foreign_keys=[created_by_id],
-    )
-
-
-# =========================
-# ACCESS REQUEST (FORMULARIO LEADS)
-# =========================
-class AccessRequest(Base):
-    __tablename__ = "access_requests"
-
-    id = Column(Integer, primary_key=True)
-    name = Column(String, nullable=False)
-    email = Column(String, nullable=False)
-    country = Column(String, nullable=False)
-    city = Column(String, nullable=False)
-    speciality = Column(String)
-    center = Column(String)
-    phone = Column(String)
-    how_heard = Column(String)
-    message = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
-# =========================
 # MÓDULO DE GUARDIA
 # =========================
 class GuardCase(Base):
@@ -262,6 +200,9 @@ class GuardCase(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
     last_activity_at = Column(DateTime, default=datetime.utcnow)
+
+    # ✅ NUEVO — CLAVE PARA CARTELERA COMPARTIDA
+    visibility = Column(Text, default="public")
 
     messages = relationship("GuardMessage", back_populates="case", cascade="all, delete")
     favorites = relationship("GuardFavorite", back_populates="case", cascade="all, delete")
@@ -310,5 +251,5 @@ class MedicalNews(Base):
     source_name = Column(String)
     source_url = Column(String, nullable=False)
     published_at = Column(DateTime)
-    specialty_tags = Column(String)  # p. ej. "cardio,urgencias"
+    specialty_tags = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
