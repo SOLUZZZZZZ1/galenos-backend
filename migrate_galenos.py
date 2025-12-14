@@ -1,12 +1,3 @@
-# migrate_galenos.py — Migraciones Galenos.pro (completo)
-# Incluye:
-# - Tablas base
-# - Perfil médico + alias de guardia
-# - Pacientes con patient_number
-# - Analíticas, imágenes, notas, timeline
-# - Módulo De Guardia
-# - ⭐ NUEVO: adjuntos por mensaje (guard_message_attachments)
-
 import os
 from fastapi import APIRouter, Header, HTTPException
 from sqlalchemy import text
@@ -22,9 +13,10 @@ def _auth(x_admin_token: str | None):
         raise HTTPException(401, "Unauthorized")
 
 
-# =========================
-# USUARIOS
-# =========================
+# -------------------------
+# TABLAS
+# -------------------------
+
 SQL_USERS = """
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
@@ -41,10 +33,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 """
 
-
-# =========================
-# PERFIL MÉDICO
-# =========================
+# 🔹 PERFIL MÉDICO (NUEVO)
 SQL_DOCTOR_PROFILES = """
 CREATE TABLE IF NOT EXISTS doctor_profiles (
     id SERIAL PRIMARY KEY,
@@ -56,4 +45,10 @@ CREATE TABLE IF NOT EXISTS doctor_profiles (
     phone TEXT,
     center TEXT,
     city TEXT,
-    bio TEXT,
+    bio TEXT
+);
+"""
+
+# 🔹 EXTENSIÓN PERFIL: alias de guardia
+SQL_DOCTOR_PROFILES_ALTER = """
+ALTER T
