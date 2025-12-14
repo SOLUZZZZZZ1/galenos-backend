@@ -1,7 +1,3 @@
-# imaging.py — Galenos.pro
-# ✅ POST /imaging/upload
-# ✅ GET  /imaging/by-patient/{patient_id}  (HISTÓRICO PARA PACIENTE)
-
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import os
@@ -91,9 +87,6 @@ def _build_duplicate_response(existing):
     }
 
 
-# =====================================================
-# POST /imaging/upload  (GUARDA + DEDUP)
-# =====================================================
 @router.post("/upload")
 async def upload_imaging(
     patient_id: int = Form(...),
@@ -161,9 +154,6 @@ async def upload_imaging(
     }
 
 
-# =====================================================
-# ✅ GET /imaging/by-patient/{patient_id}  (HISTÓRICO)
-# =====================================================
 @router.get("/by-patient/{patient_id}")
 def list_imaging_by_patient(
     patient_id: int,
