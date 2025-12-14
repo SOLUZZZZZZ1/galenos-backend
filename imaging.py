@@ -1,22 +1,21 @@
-# imaging.py — Endpoints para TAC/RM/RX/ECO reales + mini chat radiológico · Galenos.pro
+# imaging.py — Galenos.pro
+# ✅ POST /imaging/upload
+# ✅ GET  /imaging/by-patient/{patient_id}  (HISTÓRICO PARA PACIENTE)
 
 from typing import Optional, List, Dict, Any
-from datetime import datetime, date
-
+from datetime import datetime
 import os
 import base64
 import hashlib
+import json
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
-from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
 from openai import OpenAI
 
 from auth import get_current_user
 from database import get_db
 import crud
-from schemas import ImagingReturn
 from utils_pdf import convert_pdf_to_images
 from utils_imagen import analyze_medical_image
 from prompts_imagen import SYSTEM_PROMPT_IMAGEN
@@ -41,7 +40,7 @@ def _prepare_single_image_b64(file: UploadFile, content: bytes) -> str:
             raise HTTPException(400, "No se han podido extraer imágenes del PDF.")
         return imgs[0]
 
-    if any(name.endswith(ext) for ext in [".png",".jpg",".jpeg",".bmp",".tiff"]):
+    if any(name.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".bmp", ".tiff"]):
         return base64.b64encode(content).decode("utf-8")
 
     imgs = convert_pdf_to_images(content, max_pages=5, dpi=200)
@@ -61,14 +60,8 @@ def _parse_exam_date(exam_date: Optional[str]):
 
 
 def _build_duplicate_response(existing):
-    """
-    Construye una respuesta con duplicate=true para que el frontend
-    pueda mostrar el aviso amarillo.
-    """
-    # reconstruir differential desde BD
     diff_text = ""
     try:
-        import json
         val = json.loads(existing.differential) if existing.differential else []
         if isinstance(val, list):
             diff_text = "; ".join([str(v).strip() for v in val if str(v).strip()])
@@ -79,9 +72,9 @@ def _build_duplicate_response(existing):
 
     patterns_list = []
     try:
-        for p in existing.patterns:
-            if p.pattern_text:
-                patterns_list.append(p.pattern_text)
+        for p in getattr(existing, "patterns", []) or []:
+            if getattr(p, "pattern_text", None):
+                patterns_list.append({"pattern_text": p.pattern_text})
     except:
         pass
 
@@ -98,7 +91,10 @@ def _build_duplicate_response(existing):
     }
 
 
-@router.post("/upload")  # ❗ quitado response_model para permitir duplicate
+# =====================================================
+# POST /imaging/upload  (GUARDA + DEDUP)
+# =====================================================
+@router.post("/upload")
 async def upload_imaging(
     patient_id: int = Form(...),
     img_type: str = Form("imagen"),
@@ -118,12 +114,10 @@ async def upload_imaging(
 
     file_hash = hashlib.sha256(content).hexdigest()
 
-    # 🔥 DEDUPLICACIÓN TEMPRANA REAL
     existing = crud.get_imaging_by_hash(db, patient.id, file_hash)
     if existing:
         return _build_duplicate_response(existing)
 
-    # NO duplicado → analizar
     img_b64 = _prepare_single_image_b64(file, content)
     client = _get_openai_client()
     model = os.getenv("GALENOS_VISION_MODEL", "gpt-4o")
@@ -161,7 +155,58 @@ async def upload_imaging(
         "differential": "; ".join(diff_list) if diff_list else "",
         "created_at": imaging.created_at,
         "exam_date": imaging.exam_date,
-        "patterns": patterns or [],
+        "patterns": [{"pattern_text": p} for p in (patterns or [])],
         "file_path": imaging.file_path,
         "duplicate": False,
     }
+
+
+# =====================================================
+# ✅ GET /imaging/by-patient/{patient_id}  (HISTÓRICO)
+# =====================================================
+@router.get("/by-patient/{patient_id}")
+def list_imaging_by_patient(
+    patient_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    patient = crud.get_patient_by_id(db, patient_id, current_user.id)
+    if not patient:
+        raise HTTPException(404, "Paciente no encontrado o no pertenece al usuario.")
+
+    rows = crud.get_imaging_for_patient(db, patient_id=patient_id)
+
+    results: List[Dict[str, Any]] = []
+    for img in rows:
+        diff_text = ""
+        try:
+            val = json.loads(img.differential) if img.differential else []
+            if isinstance(val, list):
+                diff_text = "; ".join([str(v).strip() for v in val if str(v).strip()])
+            else:
+                diff_text = str(val).strip()
+        except:
+            diff_text = img.differential or ""
+
+        patterns_list = []
+        try:
+            for p in getattr(img, "patterns", []) or []:
+                if getattr(p, "pattern_text", None):
+                    patterns_list.append({"pattern_text": p.pattern_text})
+        except:
+            patterns_list = []
+
+        results.append(
+            {
+                "id": img.id,
+                "type": img.type,
+                "summary": img.summary,
+                "differential": diff_text,
+                "created_at": img.created_at,
+                "exam_date": img.exam_date,
+                "patterns": patterns_list,
+                "file_path": img.file_path,
+            }
+        )
+
+    return results
