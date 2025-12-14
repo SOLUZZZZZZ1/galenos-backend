@@ -625,3 +625,60 @@ async def analytics_chat(payload: ChatRequest):
     )
 
     return JSONResponse({"answer": answer, "disclaimer": disclaimer})
+
+
+
+# =====================================================
+# 7) /analytics/markers/{analytic_id}  (marcadores bajo demanda)
+# =====================================================
+@router.get("/markers/{analytic_id}")
+def get_analytic_markers(
+    analytic_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    """Devuelve marcadores normalizados de una analítica.
+
+    Seguridad: solo si la analítica pertenece a un paciente del médico actual.
+    """
+    if not analytic_id or analytic_id <= 0:
+        raise HTTPException(400, "Identificador de analítica no válido.")
+
+    # Verificar pertenencia: Analytic -> Patient -> doctor_id
+    try:
+        from models import Analytic, Patient  # type: ignore
+    except Exception:
+        # Si models no exporta directamente, fallará en runtime; mejor mensaje claro
+        raise HTTPException(500, "No se han podido importar los modelos necesarios.")
+
+    analytic = (
+        db.query(Analytic)
+        .join(Patient, Patient.id == Analytic.patient_id)
+        .filter(Analytic.id == analytic_id, Patient.doctor_id == current_user.id)
+        .first()
+    )
+
+    if not analytic:
+        raise HTTPException(404, "Analítica no encontrada o no autorizada.")
+
+    markers_raw = []
+    try:
+        for m in getattr(analytic, "markers", []) or []:
+            markers_raw.append(
+                {
+                    "name": getattr(m, "name", None),
+                    "value": getattr(m, "value", None),
+                    "unit": getattr(m, "unit", None),
+                    "ref_min": getattr(m, "ref_min", None),
+                    "ref_max": getattr(m, "ref_max", None),
+                }
+            )
+    except Exception:
+        markers_raw = []
+
+    markers_normalized = _normalize_markers_for_front(markers_raw or [])
+
+    return {
+        "analytic_id": analytic_id,
+        "markers": markers_normalized,
+    }
