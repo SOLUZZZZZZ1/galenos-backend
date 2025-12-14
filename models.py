@@ -18,11 +18,13 @@ class User(Base):
     last_login = Column(DateTime)
     is_active = Column(Integer, default=1)
 
+    # PRO / Stripe
     is_pro = Column(Integer, default=0)
     stripe_customer_id = Column(String)
     stripe_subscription_id = Column(String)
     trial_end = Column(DateTime)
 
+    # Relaciones
     patients = relationship("Patient", back_populates="doctor")
     cancellations = relationship("CancellationReason", back_populates="user")
 
@@ -76,6 +78,7 @@ class Patient(Base):
     gender = Column(String)
     notes = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
+
     patient_number = Column(Integer)
 
     doctor = relationship("User", back_populates="patients")
@@ -180,6 +183,61 @@ class TimelineItem(Base):
 
 
 # =========================
+# MOTIVOS DE CANCELACIÓN
+# =========================
+class CancellationReason(Base):
+    __tablename__ = "cancellation_reasons"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    reason_category = Column(String)
+    reason_text = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="cancellations")
+
+
+# =========================
+# INVITATIONS ✅ (NECESARIO PARA auth.py)
+# =========================
+class Invitation(Base):
+    __tablename__ = "invitations"
+
+    id = Column(Integer, primary_key=True)
+    token = Column(String, unique=True, nullable=False, index=True)
+    email = Column(String, nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    used = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
+    created_by = relationship(
+        "User",
+        back_populates="invitations_created",
+        foreign_keys=[created_by_id],
+    )
+
+
+# =========================
+# ACCESS REQUEST (LEADS)
+# =========================
+class AccessRequest(Base):
+    __tablename__ = "access_requests"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=False)
+    country = Column(String, nullable=False)
+    city = Column(String, nullable=False)
+    speciality = Column(String)
+    center = Column(String)
+    phone = Column(String)
+    how_heard = Column(String)
+    message = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# =========================
 # MÓDULO DE GUARDIA
 # =========================
 class GuardCase(Base):
@@ -201,7 +259,7 @@ class GuardCase(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     last_activity_at = Column(DateTime, default=datetime.utcnow)
 
-    # ✅ NUEVO — CLAVE PARA CARTELERA COMPARTIDA
+    # ✅ NUEVO PARA CARTELERA COMPARTIDA
     visibility = Column(Text, default="public")
 
     messages = relationship("GuardMessage", back_populates="case", cascade="all, delete")
