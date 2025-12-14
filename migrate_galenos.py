@@ -7,14 +7,15 @@ router = APIRouter(prefix="/admin/migrate-galenos", tags=["admin-migrate-galenos
 
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "GalenosAdminToken@123"
 
-# ✅ Marcador para verificar en GitHub rápidamente
-MIGRATE_GALENOS_VERSION = "SAFE_NO_TRIPLE_QUOTES_V1"
-
 
 def _auth(x_admin_token: str | None):
     if x_admin_token != ADMIN_TOKEN:
         raise HTTPException(401, "Unauthorized")
 
+
+# =========================
+# SQL (sin triple comillas)
+# =========================
 
 SQL_USERS = (
     "CREATE TABLE IF NOT EXISTS users ("
@@ -43,15 +44,10 @@ SQL_DOCTOR_PROFILES = (
     "phone TEXT,"
     "center TEXT,"
     "city TEXT,"
-    "bio TEXT"
+    "bio TEXT,"
+    "guard_alias TEXT,"
+    "guard_alias_locked INTEGER DEFAULT 0"
     ");"
-)
-
-SQL_DOCTOR_PROFILES_ALTER = (
-    "ALTER TABLE doctor_profiles "
-    "ADD COLUMN IF NOT EXISTS guard_alias TEXT;"
-    "ALTER TABLE doctor_profiles "
-    "ADD COLUMN IF NOT EXISTS guard_alias_locked INTEGER DEFAULT 0;"
 )
 
 SQL_PATIENTS = (
@@ -80,6 +76,18 @@ SQL_ANALYTICS = (
     ");"
 )
 
+SQL_ANALYTIC_MARKERS = (
+    "CREATE TABLE IF NOT EXISTS analytic_markers ("
+    "id SERIAL PRIMARY KEY,"
+    "analytic_id INTEGER NOT NULL REFERENCES analytics(id) ON DELETE CASCADE,"
+    "name TEXT NOT NULL,"
+    "value DOUBLE PRECISION,"
+    "unit TEXT,"
+    "ref_min DOUBLE PRECISION,"
+    "ref_max DOUBLE PRECISION"
+    ");"
+)
+
 SQL_IMAGING = (
     "CREATE TABLE IF NOT EXISTS imaging ("
     "id SERIAL PRIMARY KEY,"
@@ -91,6 +99,14 @@ SQL_IMAGING = (
     "file_hash TEXT,"
     "exam_date DATE,"
     "created_at TIMESTAMP DEFAULT NOW()"
+    ");"
+)
+
+SQL_IMAGING_PATTERNS = (
+    "CREATE TABLE IF NOT EXISTS imaging_patterns ("
+    "id SERIAL PRIMARY KEY,"
+    "imaging_id INTEGER NOT NULL REFERENCES imaging(id) ON DELETE CASCADE,"
+    "pattern_text TEXT NOT NULL"
     ");"
 )
 
@@ -115,6 +131,7 @@ SQL_TIMELINE_ITEMS = (
     ");"
 )
 
+# ✅ GUARDIA (con visibility)
 SQL_GUARD_CASES = (
     "CREATE TABLE IF NOT EXISTS guard_cases ("
     "id SERIAL PRIMARY KEY,"
@@ -127,8 +144,15 @@ SQL_GUARD_CASES = (
     "status TEXT DEFAULT 'open',"
     "patient_ref_id INTEGER,"
     "created_at TIMESTAMP DEFAULT NOW(),"
-    "last_activity_at TIMESTAMP DEFAULT NOW()"
+    "last_activity_at TIMESTAMP DEFAULT NOW(),"
+    "visibility TEXT DEFAULT 'public'"
     ");"
+)
+
+# ✅ Si la tabla ya existía antes, añadimos la columna (idempotente)
+SQL_GUARD_CASES_ALTER_VISIBILITY = (
+    "ALTER TABLE guard_cases "
+    "ADD COLUMN IF NOT EXISTS visibility TEXT DEFAULT 'public';"
 )
 
 SQL_GUARD_MESSAGES = (
@@ -141,6 +165,15 @@ SQL_GUARD_MESSAGES = (
     "clean_content TEXT,"
     "moderation_status TEXT,"
     "moderation_reason TEXT,"
+    "created_at TIMESTAMP DEFAULT NOW()"
+    ");"
+)
+
+SQL_GUARD_FAVORITES = (
+    "CREATE TABLE IF NOT EXISTS guard_favorites ("
+    "id SERIAL PRIMARY KEY,"
+    "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
+    "case_id INTEGER NOT NULL REFERENCES guard_cases(id) ON DELETE CASCADE,"
     "created_at TIMESTAMP DEFAULT NOW()"
     ");"
 )
@@ -163,20 +196,28 @@ def migrate_init(x_admin_token: str | None = Header(None)):
         with engine.begin() as conn:
             conn.execute(text(SQL_USERS))
             conn.execute(text(SQL_DOCTOR_PROFILES))
-            conn.execute(text(SQL_DOCTOR_PROFILES_ALTER))
-
             conn.execute(text(SQL_PATIENTS))
 
             conn.execute(text(SQL_ANALYTICS))
+            conn.execute(text(SQL_ANALYTIC_MARKERS))
+
             conn.execute(text(SQL_IMAGING))
+            conn.execute(text(SQL_IMAGING_PATTERNS))
+
             conn.execute(text(SQL_CLINICAL_NOTES))
             conn.execute(text(SQL_TIMELINE_ITEMS))
 
+            # Guardia
             conn.execute(text(SQL_GUARD_CASES))
+            conn.execute(text(SQL_GUARD_CASES_ALTER_VISIBILITY))
             conn.execute(text(SQL_GUARD_MESSAGES))
+            conn.execute(text(SQL_GUARD_FAVORITES))
             conn.execute(text(SQL_GUARD_MESSAGE_ATTACHMENTS))
 
-        return {"status": "ok", "message": "Migración aplicada (SAFE_NO_TRIPLE_QUOTES_V1)."}
+        return {
+            "status": "ok",
+            "message": "Migración aplicada: guard_cases.visibility (public/private) + tablas guardia/adjuntos OK.",
+        }
 
     except Exception as e:
         raise HTTPException(500, f"Error en migración: {e}")
