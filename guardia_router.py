@@ -1,11 +1,11 @@
-# guardia_router.py — De Guardia (NORA DE GUARDIA 13+ FINAL)
+# guardia_router.py — De Guardia (NORA DE GUARDIA 13+ FINAL SEGURO)
 # ✅ Mantiene:
 # - Adjuntos Modo B por mensaje (guard_message_attachments)
 # - /guard/attachments/options
 # - Casos + mensajes
 # ✅ Añade:
-# - ⭐ Favoritos persistentes (POST/DELETE /favorite)
-# - ✅ Resuelta (close/reopen)
+# - ⭐ Favoritos persistentes (POST/DELETE /favorite) — SOLO casos propios
+# - ✅ Resuelta (close/reopen) — SOLO casos propios
 # - GET /guard/cases con favorites_only=true y is_favorite real
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -231,6 +231,17 @@ def _is_favorite(db: Session, user_id: int, case_id: int) -> bool:
     )
 
 
+def _get_own_case_or_404(db: Session, case_id: int, user_id: int) -> GuardCase:
+    c = (
+        db.query(GuardCase)
+        .filter(GuardCase.id == case_id, GuardCase.user_id == user_id)
+        .first()
+    )
+    if not c:
+        raise HTTPException(404, "Not Found")
+    return c
+
+
 # ======================
 # OPTIONS adjuntos por paciente (para UI)
 # ======================
@@ -271,7 +282,7 @@ def guard_attachment_options(
 
 
 # ======================
-# Listar casos (⭐ + filtro favorites_only)
+# Listar casos (solo tuyos) + favorites_only
 # ======================
 @router.get("/cases")
 def list_cases(
@@ -301,7 +312,6 @@ def list_cases(
             .first()
         )
         author_alias = first_msg.author_alias if first_msg else _get_guard_alias(db, current_user.id)
-
         msg_count = db.query(GuardMessage).filter(GuardMessage.case_id == c.id).count()
 
         items.append(
@@ -324,7 +334,7 @@ def list_cases(
 
 
 # ======================
-# Listar mensajes (con attachments)
+# Listar mensajes (con attachments) — solo si el caso es tuyo
 # ======================
 @router.get("/cases/{case_id}/messages")
 def list_messages(
@@ -332,13 +342,7 @@ def list_messages(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    c = (
-        db.query(GuardCase)
-        .filter(GuardCase.id == case_id, GuardCase.user_id == current_user.id)
-        .first()
-    )
-    if not c:
-        raise HTTPException(404, "Not Found")
+    _get_own_case_or_404(db, case_id, current_user.id)
 
     msgs = (
         db.query(GuardMessage)
@@ -366,7 +370,7 @@ def list_messages(
 
 
 # ======================
-# Crear caso (1er mensaje + adjuntos)
+# Crear caso (tuyo)
 # ======================
 @router.post("/cases")
 def create_case(
@@ -375,7 +379,6 @@ def create_case(
     current_user=Depends(get_current_user),
 ):
     alias = _get_guard_alias(db, current_user.id)
-
     content = _extract_case_text(payload)
     if not content:
         raise HTTPException(400, "Contenido vacío")
@@ -426,7 +429,7 @@ def create_case(
 
 
 # ======================
-# Añadir mensaje
+# Añadir mensaje — solo si el caso es tuyo
 # ======================
 @router.post("/cases/{case_id}/messages")
 def add_message(
@@ -435,13 +438,7 @@ def add_message(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    c = (
-        db.query(GuardCase)
-        .filter(GuardCase.id == case_id, GuardCase.user_id == current_user.id)
-        .first()
-    )
-    if not c:
-        raise HTTPException(404, "Not Found")
+    _get_own_case_or_404(db, case_id, current_user.id)
 
     alias = _get_guard_alias(db, current_user.id)
     text = (payload.content or "").strip()
@@ -462,8 +459,10 @@ def add_message(
     )
     db.add(msg)
 
-    c.last_activity_at = _now()
-    db.add(c)
+    c = db.query(GuardCase).filter(GuardCase.id == case_id).first()
+    if c:
+        c.last_activity_at = _now()
+        db.add(c)
 
     db.commit()
     db.refresh(msg)
@@ -484,7 +483,7 @@ def add_message(
 
 
 # ======================
-# ⭐ Favoritos
+# ⭐ Favoritos — SOLO casos tuyos
 # ======================
 @router.post("/cases/{case_id}/favorite")
 def favorite_case(
@@ -492,9 +491,7 @@ def favorite_case(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    c = db.query(GuardCase).filter(GuardCase.id == case_id, GuardCase.user_id == current_user.id).first()
-    if not c:
-        raise HTTPException(404, "Not Found")
+    _get_own_case_or_404(db, case_id, current_user.id)
 
     if _is_favorite(db, current_user.id, case_id):
         return {"ok": True}
@@ -511,6 +508,8 @@ def unfavorite_case(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
+    _get_own_case_or_404(db, case_id, current_user.id)
+
     fav = (
         db.query(GuardFavorite)
         .filter(GuardFavorite.user_id == current_user.id, GuardFavorite.case_id == case_id)
@@ -523,7 +522,7 @@ def unfavorite_case(
 
 
 # ======================
-# ✅ Resuelta / Reabrir
+# ✅ Resuelta / Reabrir — SOLO casos tuyos
 # ======================
 @router.post("/cases/{case_id}/close")
 def close_case(
@@ -531,10 +530,7 @@ def close_case(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    c = db.query(GuardCase).filter(GuardCase.id == case_id, GuardCase.user_id == current_user.id).first()
-    if not c:
-        raise HTTPException(404, "Not Found")
-
+    c = _get_own_case_or_404(db, case_id, current_user.id)
     c.status = "closed"
     c.last_activity_at = _now()
     db.add(c)
@@ -548,10 +544,7 @@ def reopen_case(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    c = db.query(GuardCase).filter(GuardCase.id == case_id, GuardCase.user_id == current_user.id).first()
-    if not c:
-        raise HTTPException(404, "Not Found")
-
+    c = _get_own_case_or_404(db, case_id, current_user.id)
     c.status = "open"
     c.last_activity_at = _now()
     db.add(c)
