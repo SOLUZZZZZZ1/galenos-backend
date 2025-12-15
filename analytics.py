@@ -35,6 +35,9 @@ from prompts_galenos import SYSTEM_PROMPT_GALENOS
 from auth import get_current_user
 from database import get_db
 import crud
+from models import Analytic
+from schemas import AnalyticReturn
+
 from schemas import AnalyticReturn
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
