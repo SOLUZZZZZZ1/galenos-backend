@@ -627,58 +627,164 @@ async def analytics_chat(payload: ChatRequest):
     return JSONResponse({"answer": answer, "disclaimer": disclaimer})
 
 
+# =====================================================
+# Comparativa 6/12/18/24 meses (baseline = última analítica)
+# Endpoint: GET /analytics/compare/by-patient/{patient_id}
+# =====================================================
+from datetime import date, timedelta
 
-# =====================================================
-# 7) /analytics/markers/{analytic_id}  (marcadores bajo demanda)
-# =====================================================
-@router.get("/markers/{analytic_id}")
-def get_analytic_markers(
-    analytic_id: int,
+def _analytic_effective_date(a):
+    # exam_date si existe, si no created_at.date()
+    try:
+        if getattr(a, "exam_date", None):
+            return a.exam_date
+    except Exception:
+        pass
+    try:
+        ca = getattr(a, "created_at", None)
+        if ca:
+            return ca.date()
+    except Exception:
+        pass
+    return date.today()
+
+def _pick_baseline_analytic(analytics):
+    if not analytics:
+        return None
+    def key(a):
+        return (_analytic_effective_date(a), getattr(a, "created_at", None))
+    return sorted(analytics, key=key)[-1]
+
+def _build_markers_map_from_analytic(a):
+    out = {}
+    if not a:
+        return out
+    try:
+        for m in getattr(a, "markers", []) or []:
+            name = (getattr(m, "name", None) or "").strip()
+            val = getattr(m, "value", None)
+            if not name or val is None:
+                continue
+            try:
+                out[name] = float(val)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+def _trend_symbol(baseline_val, past_val):
+    if baseline_val is None or past_val is None:
+        return None
+    try:
+        if past_val == 0:
+            diff = baseline_val - past_val
+            if abs(diff) < 1e-9:
+                return "="
+            return "↑" if diff > 0 else "↓"
+        pct = (baseline_val - past_val) / abs(past_val)
+        if abs(pct) < 0.05:
+            return "="
+        return "↑" if pct > 0 else "↓"
+    except Exception:
+        return None
+
+def _find_nearest_in_window(analytics, target_date, tolerance_days, baseline_id):
+    best = None
+    best_delta = None
+    for a in analytics:
+        if getattr(a, "id", None) == baseline_id:
+            continue
+        d = _analytic_effective_date(a)
+        try:
+            delta = abs((d - target_date).days)
+        except Exception:
+            continue
+        if delta <= tolerance_days:
+            if best_delta is None or delta < best_delta:
+                best = a
+                best_delta = delta
+    return best
+
+@router.get("/compare/by-patient/{patient_id}")
+def compare_analytics_by_patient(
+    patient_id: int,
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user),
+    current_user=Depends(get_current_user),
 ):
-    """Devuelve marcadores normalizados de una analítica.
+    # Seguridad: paciente pertenece al usuario
+    patient = crud.get_patient_by_id(db, patient_id, current_user.id)
+    if not patient:
+        raise HTTPException(404, "Paciente no encontrado o no pertenece al usuario.")
 
-    Seguridad: solo si la analítica pertenece a un paciente del médico actual.
-    """
-    if not analytic_id or analytic_id <= 0:
-        raise HTTPException(400, "Identificador de analítica no válido.")
+    analytics = db.query(Analytic).filter(Analytic.patient_id == patient_id).all()
+    if not analytics:
+        return {
+            "patient_id": patient_id,
+            "baseline": None,
+            "windows": {"6m": None, "12m": None, "18m": None, "24m": None},
+            "markers": {},
+            "note": "No hay analíticas suficientes para comparar.",
+        }
 
-    # Verificar pertenencia: Analytic -> Patient -> doctor_id
-    try:
-        from models import Analytic, Patient  # type: ignore
-    except Exception:
-        # Si models no exporta directamente, fallará en runtime; mejor mensaje claro
-        raise HTTPException(500, "No se han podido importar los modelos necesarios.")
+    baseline = _pick_baseline_analytic(analytics)
+    if not baseline:
+        return {
+            "patient_id": patient_id,
+            "baseline": None,
+            "windows": {"6m": None, "12m": None, "18m": None, "24m": None},
+            "markers": {},
+            "note": "No hay analíticas suficientes para comparar.",
+        }
 
-    analytic = (
-        db.query(Analytic)
-        .join(Patient, Patient.id == Analytic.patient_id)
-        .filter(Analytic.id == analytic_id, Patient.doctor_id == current_user.id)
-        .first()
-    )
+    base_date = _analytic_effective_date(baseline)
 
-    if not analytic:
-        raise HTTPException(404, "Analítica no encontrada o no autorizada.")
+    windows_def = [
+        ("6m", 6, 60),
+        ("12m", 12, 60),
+        ("18m", 18, 90),
+        ("24m", 24, 90),
+    ]
 
-    markers_raw = []
-    try:
-        for m in getattr(analytic, "markers", []) or []:
-            markers_raw.append(
-                {
-                    "name": getattr(m, "name", None),
-                    "value": getattr(m, "value", None),
-                    "unit": getattr(m, "unit", None),
-                    "ref_min": getattr(m, "ref_min", None),
-                    "ref_max": getattr(m, "ref_max", None),
-                }
-            )
-    except Exception:
-        markers_raw = []
+    windows = {}
+    selected = {}
 
-    markers_normalized = _normalize_markers_for_front(markers_raw or [])
+    for label, months, tol in windows_def:
+        target = base_date - timedelta(days=30 * months)
+        picked = _find_nearest_in_window(analytics, target, tol, baseline.id)
+        selected[label] = picked
+        windows[label] = {"analytic_id": picked.id, "date": _analytic_effective_date(picked).isoformat()} if picked else None
+
+    base_markers = _build_markers_map_from_analytic(baseline)
+    window_markers = {label: _build_markers_map_from_analytic(selected.get(label)) for (label, _, _) in windows_def}
+
+    all_names = set(base_markers.keys())
+    for label in window_markers:
+        all_names.update(window_markers[label].keys())
+
+    markers_out = {}
+    for name in sorted(all_names):
+        bval = base_markers.get(name)
+        row = {
+            "baseline": bval,
+            "6m": window_markers["6m"].get(name),
+            "12m": window_markers["12m"].get(name),
+            "18m": window_markers["18m"].get(name),
+            "24m": window_markers["24m"].get(name),
+            "trend": {
+                "6m": _trend_symbol(bval, window_markers["6m"].get(name)),
+                "12m": _trend_symbol(bval, window_markers["12m"].get(name)),
+                "18m": _trend_symbol(bval, window_markers["18m"].get(name)),
+                "24m": _trend_symbol(bval, window_markers["24m"].get(name)),
+            },
+        }
+        markers_out[name] = row
 
     return {
-        "analytic_id": analytic_id,
-        "markers": markers_normalized,
+        "patient_id": patient_id,
+        "baseline": {"analytic_id": baseline.id, "date": base_date.isoformat()},
+        "windows": windows,
+        "markers": markers_out,
+        "tolerances": {"6m": 60, "12m": 60, "18m": 90, "24m": 90},
+        "baseline_rule": "ultima analitica (exam_date si existe, si no created_at)",
     }
