@@ -7,7 +7,6 @@ from doctor_profile_extra import router as doctor_profile_extra_router
 from admin_doctors import router as admin_doctors_router
 from medical_news_router import router as medical_news_router
 
-
 from database import Base, engine, get_db
 from models import User, AccessRequest
 from schemas import (
@@ -36,6 +35,9 @@ import timeline
 import stripe_payments
 import migrate_galenos
 import doctor_profile
+
+# ✅ NUEVO: router comparativa 6/12/18/24
+import analytics_compare_router
 
 
 # ======================================================
@@ -72,7 +74,6 @@ app.add_middleware(
 )
 
 
-
 # ======================================================
 # HEALTHCHECK
 # ======================================================
@@ -94,13 +95,8 @@ def auth_login(data: LoginRequest, db: Session = Depends(get_db)):
     return login_user(data, db)
 
 
-# 👇 AQUÍ EL CAMBIO IMPORTANTE
 @app.get("/auth/me")
 def auth_me(current_user: User = Depends(get_current_user)):
-    """
-    Devuelve la info básica del usuario, incluyendo is_pro
-    para que el frontend sepa si debe mostrar el panel PRO completo.
-    """
     return {
         "id": current_user.id,
         "email": current_user.email,
@@ -182,3 +178,6 @@ app.include_router(guardia_router)
 app.include_router(doctor_profile_extra_router)
 app.include_router(admin_doctors_router)
 app.include_router(medical_news_router)
+
+# ✅ NUEVO
+app.include_router(analytics_compare_router.router)
