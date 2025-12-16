@@ -36,8 +36,10 @@ import stripe_payments
 import migrate_galenos
 import doctor_profile
 
+
 # ✅ NUEVO: router comparativa 6/12/18/24
 import analytics_compare_router
+import migrate_community
 
 
 # ======================================================
@@ -181,3 +183,4 @@ app.include_router(medical_news_router)
 
 # ✅ NUEVO
 app.include_router(analytics_compare_router.router)
+app.include_router(migrate_community.router)
