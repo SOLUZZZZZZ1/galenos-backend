@@ -41,6 +41,7 @@ import doctor_profile
 import analytics_compare_router
 import migrate_community
 import community_router
+import weekly_contest_router
 
 
 
@@ -187,4 +188,5 @@ app.include_router(medical_news_router)
 app.include_router(analytics_compare_router.router)
 app.include_router(migrate_community.router)
 app.include_router(community_router.router)
+app.include_router(weekly_contest_router.router)
 
