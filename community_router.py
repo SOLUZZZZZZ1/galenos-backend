@@ -7,6 +7,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from datetime import datetime
 from typing import Optional
+from fastapi import Header
+from openai import OpenAI
+
 
 from database import get_db
 from auth import get_current_user
@@ -53,6 +56,12 @@ def _get_visible_case_or_404(db: Session, case_id: int, current_user_id: int) ->
         raise HTTPException(404, "Not Found")
 
     return c
+ADMIN_TOKEN = os.getenv("8354Law1@") or "GalenosAdminToken@123"
+
+def _admin_auth(x_admin_token: str | None):
+    if x_admin_token != ADMIN_TOKEN:
+        raise HTTPException(401, "Unauthorized")
+
 
 
 # ======================
