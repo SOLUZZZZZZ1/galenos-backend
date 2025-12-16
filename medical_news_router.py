@@ -85,12 +85,10 @@ def live_medical_news(
     items: List[Dict[str, Any]] = []
 
     for src in RSS_SOURCES:
-        feed = feedparser.parse(src["url"])
-        # Si feed.bozo, igual puede traer entries; no lo rompemos.
-        for e in getattr(feed, "entries", [])[:50]:
-            title = _safe_text(getattr(e, "title", ""))
-            link = _safe_text(getattr(e, "link", ""))
-            summary = _clean_html(_safe_text(getattr(e, "summary", "")))
+        feed = feedparser.parse(
+    src["url"],
+    request_headers={"User-Agent": "GalenosBot/1.0 (+https://galenos.pro)"}
+)
 
             published_at = None
             try:
