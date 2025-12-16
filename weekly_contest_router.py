@@ -175,30 +175,42 @@ def run_weekly_contest(
         db.add(open_weekly)
         db.commit()
 
-    # 2) Publicar nuevo concurso semanal
-    specialty = _current_specialty_by_week()
-    case_data = _ai_generate_weekly_case(specialty)
+    # 2) Publicar nuevo concurso semanal (ANTI-DUPLICADOS)
+week = datetime.utcnow().isocalendar().week
+specialty = _current_specialty_by_week()
 
-    week = datetime.utcnow().isocalendar().week
-    new_case = CommunityCase(
-        user_id=1,  # autor “sistema” (o el que uses como Galenos)
-        title=f"Concurso semanal · Semana {week} · {specialty}",
-        clinical_context=case_data["clinical_context"],
-        question=case_data["question"],
-        visibility="public",
-        status="open",
-        created_at=_now(),
-        last_activity_at=_now(),
+# 🔒 Guardarraíl: si ya existe concurso de esta semana, NO crear otro
+existing = (
+    db.query(CommunityCase)
+    .filter(
+        CommunityCase.title.ilike(f"Concurso semanal · Semana {week}%")
     )
+    .first()
+)
 
-    db.add(new_case)
-    db.commit()
-    db.refresh(new_case)
-
+if existing:
     return {
         "ok": True,
         "closed_previous": bool(open_weekly),
-        "new_case_id": new_case.id,
+        "new_case_id": existing.id,
         "specialty": specialty,
         "week": week,
+        "note": "Concurso semanal ya existente. No se creó uno nuevo."
     }
+
+case_data = _ai_generate_weekly_case(specialty)
+
+new_case = CommunityCase(
+    user_id=1,  # usuario sistema / Galenos
+    title=f"Concurso semanal · Semana {week} · {specialty}",
+    clinical_context=case_data["clinical_context"],
+    question=case_data["question"],
+    visibility="public",
+    status="open",
+    created_at=_now(),
+    last_activity_at=_now(),
+)
+
+db.add(new_case)
+db.commit()
+db.refresh(new_case)
