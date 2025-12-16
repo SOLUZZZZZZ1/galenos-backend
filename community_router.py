@@ -16,6 +16,9 @@ from pydantic import BaseModel, Field
 router = APIRouter(prefix="/community", tags=["community"])
 
 
+# ======================
+# Schemas
+# ======================
 class CommunityCaseCreateIn(BaseModel):
     title: Optional[str] = None
     clinical_context: Optional[str] = None
@@ -27,6 +30,9 @@ class CommunityResponseCreateIn(BaseModel):
     content: str
 
 
+# ======================
+# Helpers
+# ======================
 def _now():
     return datetime.utcnow()
 
@@ -40,4 +46,7 @@ def _get_visible_case_or_404(db: Session, case_id: int, current_user_id: int) ->
     c = db.query(CommunityCase).filter(CommunityCase.id == case_id).first()
     if not c:
         raise HTTPException(404, "Not Found")
-    if c.user_id != current_user_id and (c.visibility_)
+
+    # visible si es tuyo o es público
+    vis = (c.visibility or "public") if hasattr(c, "visibility") else "public"
+    if c.user_id !=_
