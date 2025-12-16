@@ -40,4 +40,4 @@ def _get_visible_case_or_404(db: Session, case_id: int, current_user_id: int) ->
     c = db.query(CommunityCase).filter(CommunityCase.id == case_id).first()
     if not c:
         raise HTTPException(404, "Not Found")
-    if c.user_id != current_user_id and (c.visibility_
+    if c.user_id != current_user_id and (c.visibility_)
