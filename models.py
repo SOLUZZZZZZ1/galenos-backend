@@ -311,3 +311,40 @@ class MedicalNews(Base):
     published_at = Column(DateTime)
     specialty_tags = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+# =========================
+# MÓDULO COMUNIDAD (FORMACIÓN)
+# =========================
+class CommunityCase(Base):
+    __tablename__ = "community_cases"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    title = Column(Text)
+    clinical_context = Column(Text)
+    question = Column(Text)
+
+    status = Column(Text, default="open")        # open | closed
+    visibility = Column(Text, default="public")  # public | private
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_activity_at = Column(DateTime, default=datetime.utcnow)
+
+    responses = relationship("CommunityResponse", back_populates="case", cascade="all, delete")
+
+
+class CommunityResponse(Base):
+    __tablename__ = "community_responses"
+
+    id = Column(Integer, primary_key=True)
+    case_id = Column(Integer, ForeignKey("community_cases.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    author_alias = Column(Text)
+    content = Column(Text, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    case = relationship("CommunityCase", back_populates="responses")
+
