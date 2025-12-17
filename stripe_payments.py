@@ -1,201 +1,163 @@
-# stripe_payments.py — Stripe completo: Checkout + Webhook + Cancelación
+# stripe_payments.py — Stripe FINAL (Galenos)
+# Checkout + Customer Portal + Webhooks
+# Diseño cerrado y alineado con el modelo Galenos:
+# - Stripe gestiona pagos/cancelaciones
+# - Galenos gestiona acceso, gracia (60 días) y archivado
+# - NO cancelación directa desde Galenos
+
 import os
+from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request, Depends
 from sqlalchemy.orm import Session
 import stripe
 
 from database import get_db
 from auth import get_current_user
-import models, crud
+import models
 
 router = APIRouter(prefix="/billing", tags=["Billing"])
 
+# --------------------------------------------------
+# CONFIG
+# --------------------------------------------------
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://galenos.pro")
 
-# Podemos usar una u otra variable de entorno
-PRICE_ID = os.getenv("STRIPE_PRICE_ID") or os.getenv("STRIPE_PRICE_ID_GALENOS_PRO")
+PRICE_ID = os.getenv("STRIPE_PRICE_ID_GALENOS_PRO")
 
-# --------------------------------------------------------
-# 1A) CREAR CHECKOUT — USO PÚBLICO (LANDING, SIN LOGIN)
-# --------------------------------------------------------
+# --------------------------------------------------
+# 1) CHECKOUT — MÉDICO LOGUEADO
+# --------------------------------------------------
 @router.get("/create-checkout-session")
-def create_checkout_session_public():
-  """
-  Endpoint original, SIN autenticación.
-  Lo usa la landing para enviar a Stripe directamente.
-  No mira perfil médico ni usuario.
-  """
-  if not PRICE_ID:
-      raise HTTPException(500, "STRIPE_PRICE_ID / STRIPE_PRICE_ID_GALENOS_PRO no está configurado.")
-
-  try:
-      session = stripe.checkout.Session.create(
-          mode="subscription",
-          success_url=f"{FRONTEND_URL}/pro?success=true",
-          cancel_url=f"{FRONTEND_URL}/pro?canceled=true",
-          line_items=[{
-              "price": PRICE_ID,
-              "quantity": 1
-          }],
-          subscription_data={"trial_period_days": 3},
-      )
-      return {"checkout_url": session.url}
-  except Exception as e:
-      raise HTTPException(500, f"Stripe error: {e}")
-
-
-# --------------------------------------------------------
-# 1B) CREAR CHECKOUT — USO APP (MÉDICO LOGUEADO + PERFIL)
-# --------------------------------------------------------
-@router.get("/create-checkout-session-auth")
-def create_checkout_session_auth(
+def create_checkout_session(
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user),
+    current_user=Depends(get_current_user),
 ):
-  """
-  Endpoint PROTEGIDO para la app Galenos.
-  Solo deja pasar a Stripe si el médico:
-    - Está autenticado
-    - Tiene Perfil Médico creado
-  Además, guarda stripe_customer_id en el usuario para que
-  el webhook pueda marcar is_pro correctamente.
-  """
+    if not PRICE_ID:
+        raise HTTPException(500, "STRIPE_PRICE_ID_GALENOS_PRO no configurada")
 
-  if not PRICE_ID:
-      raise HTTPException(500, "STRIPE_PRICE_ID / STRIPE_PRICE_ID_GALENOS_PRO no está configurado.")
+    user = db.query(models.User).filter(models.User.id == current_user.id).first()
+    if not user:
+        raise HTTPException(401, "Usuario no encontrado")
 
-  # 1) Bloquear si NO hay perfil médico
-  profile = crud.get_doctor_profile_by_user(db, current_user.id)
-  if not profile:
-      raise HTTPException(
-          status_code=400,
-          detail="PROFILE_REQUIRED",
-      )
+    try:
+        if user.stripe_customer_id:
+            session = stripe.checkout.Session.create(
+                mode="subscription",
+                customer=user.stripe_customer_id,
+                success_url=f"{FRONTEND_URL}/panel-medico?pro=success",
+                cancel_url=f"{FRONTEND_URL}/panel-medico?pro=cancel",
+                line_items=[{"price": PRICE_ID, "quantity": 1}],
+            )
+        else:
+            session = stripe.checkout.Session.create(
+                mode="subscription",
+                success_url=f"{FRONTEND_URL}/panel-medico?pro=success",
+                cancel_url=f"{FRONTEND_URL}/panel-medico?pro=cancel",
+                line_items=[{"price": PRICE_ID, "quantity": 1}],
+            )
 
-  # 2) Obtener usuario completo de BD
-  user = db.query(models.User).filter(models.User.id == current_user.id).first()
-  if not user:
-      raise HTTPException(401, "Usuario no encontrado.")
+        if session.customer and session.customer != user.stripe_customer_id:
+            user.stripe_customer_id = session.customer
+            db.commit()
 
-  try:
-      # Si ya tenemos stripe_customer_id, lo reutilizamos
-      stripe_customer_id = user.stripe_customer_id
+        return {"checkout_url": session.url}
 
-      if stripe_customer_id:
-          session = stripe.checkout.Session.create(
-              mode="subscription",
-              success_url=f"{FRONTEND_URL}/pro?success=true",
-              cancel_url=f"{FRONTEND_URL}/pro?canceled=true",
-              customer=stripe_customer_id,
-              line_items=[{
-                  "price": PRICE_ID,
-                  "quantity": 1
-              }],
-              subscription_data={"trial_period_days": 3},
-          )
-      else:
-          # Stripe creará el customer automáticamente
-          session = stripe.checkout.Session.create(
-              mode="subscription",
-              success_url=f"{FRONTEND_URL}/pro?success=true",
-              cancel_url=f"{FRONTEND_URL}/pro?canceled=true",
-              line_items=[{
-                  "price": PRICE_ID,
-                  "quantity": 1
-              }],
-              subscription_data={"trial_period_days": 3},
-          )
-
-      # ⭐ MUY IMPORTANTE:
-      # Guardar el customer que Stripe ha usado/creado en el usuario
-      customer_id = session.customer
-      if customer_id and customer_id != user.stripe_customer_id:
-          user.stripe_customer_id = customer_id
-          db.commit()
-
-      return {"checkout_url": session.url}
-
-  except Exception as e:
-      raise HTTPException(500, f"Stripe error: {e}")
+    except Exception as e:
+        raise HTTPException(500, f"Stripe error: {e}")
 
 
-# --------------------------
-# 2) WEBHOOK
-# --------------------------
+# --------------------------------------------------
+# 2) CUSTOMER PORTAL — GESTIONAR / CANCELAR
+# --------------------------------------------------
+@router.post("/portal")
+def open_customer_portal(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    user = db.query(models.User).filter(models.User.id == current_user.id).first()
+    if not user or not user.stripe_customer_id:
+        raise HTTPException(400, "No hay cliente Stripe asociado")
+
+    try:
+        portal = stripe.billing_portal.Session.create(
+            customer=user.stripe_customer_id,
+            return_url=f"{FRONTEND_URL}/panel-medico",
+        )
+        return {"url": portal.url}
+    except Exception as e:
+        raise HTTPException(500, f"Stripe portal error: {e}")
+
+
+# --------------------------------------------------
+# 3) WEBHOOK — FUENTE DE VERDAD DE ESTADOS
+# --------------------------------------------------
 @router.post("/webhook")
 async def stripe_webhook(req: Request, db: Session = Depends(get_db)):
-  payload = await req.body()
-  sig_header = req.headers.get("stripe-signature")
+    payload = await req.body()
+    sig_header = req.headers.get("stripe-signature")
 
-  try:
-      event = stripe.Webhook.construct_event(
-          payload, sig_header, os.getenv("STRIPE_WEBHOOK_SECRET")
-      )
-  except Exception:
-      raise HTTPException(400, "Webhook signature error")
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, STRIPE_WEBHOOK_SECRET
+        )
+    except Exception:
+        raise HTTPException(400, "Webhook signature error")
 
-  # ACTIVACIÓN
-  if event["type"] == "customer.subscription.created":
-      sub = event["data"]["object"]
-      customer_id = sub["customer"]
-      stripe_subscription_id = sub["id"]
-      trial_end_ts = sub["trial_end"]
+    event_type = event["type"]
 
-      user = db.query(models.User).filter(models.User.stripe_customer_id == customer_id).first()
-      if user:
-          user.is_pro = 1
-          user.stripe_subscription_id = stripe_subscription_id
-          from datetime import datetime
-          user.trial_end = datetime.utcfromtimestamp(trial_end_ts)
-          db.commit()
+    # A) ACTIVACIÓN PRO
+    if event_type == "checkout.session.completed":
+        session = event["data"]["object"]
+        customer_id = session.get("customer")
+        subscription_id = session.get("subscription")
 
-  # CANCELACIÓN DESDE STRIPE
-  if event["type"] == "customer.subscription.deleted":
-      sub = event["data"]["object"]
-      customer_id = sub["customer"]
+        if customer_id:
+            user = (
+                db.query(models.User)
+                .filter(models.User.stripe_customer_id == customer_id)
+                .first()
+            )
+            if user:
+                user.is_pro = True
+                user.stripe_subscription_id = subscription_id
+                user.subscription_started_at = datetime.now(timezone.utc)
+                user.subscription_ended_at = None
+                user.cancel_at_period_end = False
+                user.archived_at = None
+                db.commit()
 
-      user = db.query(models.User).filter(models.User.stripe_customer_id == customer_id).first()
-      if user:
-          user.is_pro = 0
-          user.stripe_subscription_id = None
-          db.commit()
+    # B) ACTUALIZACIÓN (cancel_at_period_end)
+    if event_type == "customer.subscription.updated":
+        sub = event["data"]["object"]
+        customer_id = sub.get("customer")
 
-  return {"status": "ok"}
+        user = (
+            db.query(models.User)
+            .filter(models.User.stripe_customer_id == customer_id)
+            .first()
+        )
+        if user:
+            user.stripe_subscription_id = sub.get("id")
+            user.cancel_at_period_end = bool(sub.get("cancel_at_period_end"))
+            db.commit()
 
+    # C) FIN REAL (INICIA GRACIA)
+    if event_type == "customer.subscription.deleted":
+        sub = event["data"]["object"]
+        customer_id = sub.get("customer")
 
-# --------------------------
-# 3) CANCELAR SUSCRIPCIÓN (médico pulsa botón)
-# --------------------------
-@router.post("/cancel")
-def cancel_subscription(
-    reason_category: str,
-    reason_text: str = "",
-    db: Session = Depends(get_db),
-    current_user = Depends(get_current_user),
-):
-  user = db.query(models.User).filter(models.User.id == current_user.id).first()
-  if not user or not user.stripe_subscription_id:
-      raise HTTPException(400, "El usuario no tiene suscripción activa.")
+        user = (
+            db.query(models.User)
+            .filter(models.User.stripe_customer_id == customer_id)
+            .first()
+        )
+        if user:
+            user.is_pro = False
+            user.subscription_ended_at = datetime.now(timezone.utc)
+            user.cancel_at_period_end = False
+            user.stripe_subscription_id = None
+            db.commit()
 
-  # GUARDAR MOTIVO
-  mot = models.CancellationReason(
-      user_id=user.id,
-      reason_category=reason_category,
-      reason_text=reason_text.strip()
-  )
-  db.add(mot)
-  db.commit()
-
-  # CANCELAR EN STRIPE
-  try:
-      stripe.Subscription.delete(user.stripe_subscription_id)
-  except Exception as e:
-      raise HTTPException(500, f"Error al cancelar en Stripe: {e}")
-
-  # ACTUALIZAR BD
-  user.is_pro = 0
-  user.stripe_subscription_id = None
-  db.commit()
-
-  return {"status": "ok", "message": "Suscripción cancelada correctamente."}
+    return {"status": "ok"}
