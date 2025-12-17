@@ -1,9 +1,15 @@
-# stripe_payments.py — Stripe FINAL (Galenos)
-# Checkout + Customer Portal + Webhooks
-# Diseño cerrado y alineado con el modelo Galenos:
+# stripe_payments.py — Stripe FINAL v3 (Galenos)
+# Checkout + Customer Portal + Webhooks (cerrado, sin cancelación directa)
+#
+# FIX v3 (Nora):
+# - Además de client_reference_id (user.id), enlazamos el webhook también por email
+#   (customer_details.email / customer_email) para cubrir casos donde el alta se hizo
+#   fuera del checkout autenticado (p.ej. Pricing Table).
+#
+# Diseño:
 # - Stripe gestiona pagos/cancelaciones
 # - Galenos gestiona acceso, gracia (60 días) y archivado
-# - NO cancelación directa desde Galenos
+# - Cancelación SIEMPRE vía Stripe Customer Portal (nunca /cancel en Galenos)
 
 import os
 from datetime import datetime, timezone
@@ -17,18 +23,13 @@ import models
 
 router = APIRouter(prefix="/billing", tags=["Billing"])
 
-# --------------------------------------------------
-# CONFIG
-# --------------------------------------------------
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://galenos.pro")
 
-PRICE_ID = os.getenv("STRIPE_PRICE_ID_GALENOS_PRO")
+PRICE_ID = os.getenv("STRIPE_PRICE_ID_GALENOS_PRO") or os.getenv("STRIPE_PRICE_ID")
 
-# --------------------------------------------------
-# 1) CHECKOUT — MÉDICO LOGUEADO
-# --------------------------------------------------
+
 @router.get("/create-checkout-session")
 def create_checkout_session(
     db: Session = Depends(get_db),
@@ -42,23 +43,23 @@ def create_checkout_session(
         raise HTTPException(401, "Usuario no encontrado")
 
     try:
-        if user.stripe_customer_id:
+        common_kwargs = dict(
+            mode="subscription",
+            success_url=f"{FRONTEND_URL}/panel-medico?pro=success",
+            cancel_url=f"{FRONTEND_URL}/panel-medico?pro=cancel",
+            line_items=[{"price": PRICE_ID, "quantity": 1}],
+            client_reference_id=str(user.id),
+        )
+
+        if getattr(user, "stripe_customer_id", None):
             session = stripe.checkout.Session.create(
-                mode="subscription",
                 customer=user.stripe_customer_id,
-                success_url=f"{FRONTEND_URL}/panel-medico?pro=success",
-                cancel_url=f"{FRONTEND_URL}/panel-medico?pro=cancel",
-                line_items=[{"price": PRICE_ID, "quantity": 1}],
+                **common_kwargs,
             )
         else:
-            session = stripe.checkout.Session.create(
-                mode="subscription",
-                success_url=f"{FRONTEND_URL}/panel-medico?pro=success",
-                cancel_url=f"{FRONTEND_URL}/panel-medico?pro=cancel",
-                line_items=[{"price": PRICE_ID, "quantity": 1}],
-            )
+            session = stripe.checkout.Session.create(**common_kwargs)
 
-        if session.customer and session.customer != user.stripe_customer_id:
+        if session.customer and session.customer != getattr(user, "stripe_customer_id", None):
             user.stripe_customer_id = session.customer
             db.commit()
 
@@ -68,16 +69,21 @@ def create_checkout_session(
         raise HTTPException(500, f"Stripe error: {e}")
 
 
-# --------------------------------------------------
-# 2) CUSTOMER PORTAL — GESTIONAR / CANCELAR
-# --------------------------------------------------
+@router.get("/create-checkout-session-auth")
+def create_checkout_session_auth(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    return create_checkout_session(db=db, current_user=current_user)
+
+
 @router.post("/portal")
 def open_customer_portal(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
     user = db.query(models.User).filter(models.User.id == current_user.id).first()
-    if not user or not user.stripe_customer_id:
+    if not user or not getattr(user, "stripe_customer_id", None):
         raise HTTPException(400, "No hay cliente Stripe asociado")
 
     try:
@@ -90,9 +96,6 @@ def open_customer_portal(
         raise HTTPException(500, f"Stripe portal error: {e}")
 
 
-# --------------------------------------------------
-# 3) WEBHOOK — FUENTE DE VERDAD DE ESTADOS
-# --------------------------------------------------
 @router.post("/webhook")
 async def stripe_webhook(req: Request, db: Session = Depends(get_db)):
     payload = await req.body()
@@ -107,11 +110,20 @@ async def stripe_webhook(req: Request, db: Session = Depends(get_db)):
 
     event_type = event["type"]
 
-    # A) ACTIVACIÓN PRO
     if event_type == "checkout.session.completed":
         session = event["data"]["object"]
+
         customer_id = session.get("customer")
         subscription_id = session.get("subscription")
+        client_ref = session.get("client_reference_id")
+
+        email = None
+        cd = session.get("customer_details") or {}
+        if isinstance(cd, dict):
+            email = cd.get("email") or None
+        email = email or session.get("customer_email")
+
+        user = None
 
         if customer_id:
             user = (
@@ -119,40 +131,64 @@ async def stripe_webhook(req: Request, db: Session = Depends(get_db)):
                 .filter(models.User.stripe_customer_id == customer_id)
                 .first()
             )
-            if user:
-                user.is_pro = True
-                user.stripe_subscription_id = subscription_id
-                user.subscription_started_at = datetime.now(timezone.utc)
-                user.subscription_ended_at = None
-                user.cancel_at_period_end = False
-                user.archived_at = None
-                db.commit()
 
-    # B) ACTUALIZACIÓN (cancel_at_period_end)
+        if not user and client_ref:
+            try:
+                uid = int(client_ref)
+                user = db.query(models.User).filter(models.User.id == uid).first()
+            except Exception:
+                user = None
+
+        if not user and email:
+            user = (
+                db.query(models.User)
+                .filter(models.User.email == email)
+                .first()
+            )
+
+        if user:
+            if customer_id and customer_id != getattr(user, "stripe_customer_id", None):
+                user.stripe_customer_id = customer_id
+            if subscription_id:
+                user.stripe_subscription_id = subscription_id
+
+            user.is_pro = True
+            user.subscription_started_at = datetime.now(timezone.utc)
+            user.subscription_ended_at = None
+            user.cancel_at_period_end = False
+            user.archived_at = None
+
+            db.commit()
+
     if event_type == "customer.subscription.updated":
         sub = event["data"]["object"]
         customer_id = sub.get("customer")
 
-        user = (
-            db.query(models.User)
-            .filter(models.User.stripe_customer_id == customer_id)
-            .first()
-        )
+        user = None
+        if customer_id:
+            user = (
+                db.query(models.User)
+                .filter(models.User.stripe_customer_id == customer_id)
+                .first()
+            )
+
         if user:
             user.stripe_subscription_id = sub.get("id")
             user.cancel_at_period_end = bool(sub.get("cancel_at_period_end"))
             db.commit()
 
-    # C) FIN REAL (INICIA GRACIA)
     if event_type == "customer.subscription.deleted":
         sub = event["data"]["object"]
         customer_id = sub.get("customer")
 
-        user = (
-            db.query(models.User)
-            .filter(models.User.stripe_customer_id == customer_id)
-            .first()
-        )
+        user = None
+        if customer_id:
+            user = (
+                db.query(models.User)
+                .filter(models.User.stripe_customer_id == customer_id)
+                .first()
+            )
+
         if user:
             user.is_pro = False
             user.subscription_ended_at = datetime.now(timezone.utc)
