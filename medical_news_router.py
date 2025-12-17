@@ -150,10 +150,12 @@ def live_news(
             # si una fuente falla, no rompe todo el feed
             continue
 
-    # Ordena: más reciente primero. Si no hay fecha, al final.
+    # Ordena: más reciente primero.
+    # FIX (Nora): muchos RSS NO traen published_parsed/updated_parsed.
+    # Si published_at es None, usamos created_at como fallback (en vez de mandarlo a 1970),
+    # para que el feed siempre muestre items "vivos" y no se queden fuera por el limit.
     def sort_key(x):
-        dt = x.get("published_at")
-        return dt or datetime(1970, 1, 1, tzinfo=timezone.utc)
+        return x.get("published_at") or x.get("created_at") or datetime(1970, 1, 1, tzinfo=timezone.utc)
 
     items.sort(key=sort_key, reverse=True)
     return {"items": items[:limit]}
