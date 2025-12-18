@@ -247,34 +247,34 @@ async def upload_analytic(
         exam_date=final_date,
     )
 
-# ✅ Subimos binarios a Backblaze B2 (original + preview) y guardamos SOLO la clave del preview
-try:
-    # Determinar extensión del preview (si viene de PDF, images[0] suele ser PNG)
-    preview_ext = "png"
-    lower_name = (file.filename or "").lower()
-    if lower_name.endswith(".jpg") or lower_name.endswith(".jpeg"):
-        preview_ext = "jpg"
-    elif lower_name.endswith(".png"):
+    # ✅ Subimos binarios a Backblaze B2 (original + preview) y guardamos SOLO la clave del preview
+    try:
+        # Determinar extensión del preview (si viene de PDF, images[0] suele ser PNG)
         preview_ext = "png"
+        lower_name = (file.filename or "").lower()
+        if lower_name.endswith(".jpg") or lower_name.endswith(".jpeg"):
+            preview_ext = "jpg"
+        elif lower_name.endswith(".png"):
+            preview_ext = "png"
 
-    up = _b2_upload_original_and_preview(
-        user_id=user.id,
-        kind="analytics",
-        record_id=analytic.id,
-        original_filename=file.filename or "analytic",
-        original_bytes=content,
-        preview_b64=images[0],
-        preview_ext=preview_ext,
-    )
-    # Guardamos en BD la clave del preview (NO base64)
-    analytic.file_path = up["preview_key"]
-    # Mantenemos file_hash como dedupe (ya calculado)
-    db.add(analytic)
-    db.commit()
-    db.refresh(analytic)
-except Exception as e:
-    # Si B2 falla, no rompemos la subida clínica; devolvemos error claro
-    raise HTTPException(500, f"Error subiendo fichero a almacenamiento: {e}")
+        up = _b2_upload_original_and_preview(
+            user_id=user.id,
+            kind="analytics",
+            record_id=analytic.id,
+            original_filename=file.filename or "analytic",
+            original_bytes=content,
+            preview_b64=images[0],
+            preview_ext=preview_ext,
+        )
+        # Guardamos en BD la clave del preview (NO base64)
+        analytic.file_path = up["preview_key"]
+        # Mantenemos file_hash como dedupe (ya calculado)
+        db.add(analytic)
+        db.commit()
+        db.refresh(analytic)
+    except Exception as e:
+        # Si B2 falla, devolvemos error claro
+        raise HTTPException(500, f"Error subiendo fichero a almacenamiento: {e}")
 
     if markers_raw:
         crud.add_markers_to_analytic(db, analytic.id, markers_raw)
@@ -284,7 +284,6 @@ except Exception as e:
         "summary": summary,
         "markers": _normalize_markers_for_front(markers_raw or []),
     }
-
 
 # =============================
 # ENDPOINT: BY PATIENT

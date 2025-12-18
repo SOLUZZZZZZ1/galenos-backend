@@ -195,30 +195,30 @@ async def upload_imaging(
         exam_date=exam_date_value,
     )
 
-# ✅ Subimos binarios a Backblaze B2 (original + preview) y guardamos SOLO la clave del preview
-try:
-    preview_ext = "png"
-    lower_name = (file.filename or "").lower()
-    if lower_name.endswith(".jpg") or lower_name.endswith(".jpeg"):
-        preview_ext = "jpg"
-    elif lower_name.endswith(".png"):
+    # ✅ Subimos binarios a Backblaze B2 (original + preview) y guardamos SOLO la clave del preview
+    try:
         preview_ext = "png"
+        lower_name = (file.filename or "").lower()
+        if lower_name.endswith(".jpg") or lower_name.endswith(".jpeg"):
+            preview_ext = "jpg"
+        elif lower_name.endswith(".png"):
+            preview_ext = "png"
 
-    up = _b2_upload_original_and_preview(
-        user_id=current_user.id,
-        kind="imaging",
-        record_id=imaging.id,
-        original_filename=file.filename or "imaging",
-        original_bytes=content,
-        preview_b64=img_b64,
-        preview_ext=preview_ext,
-    )
-    imaging.file_path = up["preview_key"]
-    db.add(imaging)
-    db.commit()
-    db.refresh(imaging)
-except Exception as e:
-    raise HTTPException(500, f"Error subiendo fichero a almacenamiento: {e}")
+        up = _b2_upload_original_and_preview(
+            user_id=current_user.id,
+            kind="imaging",
+            record_id=imaging.id,
+            original_filename=file.filename or "imaging",
+            original_bytes=content,
+            preview_b64=img_b64,
+            preview_ext=preview_ext,
+        )
+        imaging.file_path = up["preview_key"]
+        db.add(imaging)
+        db.commit()
+        db.refresh(imaging)
+    except Exception as e:
+        raise HTTPException(500, f"Error subiendo fichero a almacenamiento: {e}")
 
     crud.add_patterns_to_imaging(db, imaging.id, patterns or [])
 
@@ -233,7 +233,6 @@ except Exception as e:
         "file_path": _file_path_for_front(imaging.file_path),
         "duplicate": False,
     }
-
 
 @router.get("/by-patient/{patient_id}")
 def list_imaging_by_patient(
