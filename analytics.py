@@ -25,6 +25,7 @@ from openai import OpenAI
 from database import get_db
 from auth import get_current_user
 import crud
+import storage_b2
 from schemas import AnalyticReturn
 from utils_pdf import convert_pdf_to_images
 from utils_vision import analyze_with_ai_vision
@@ -106,6 +107,76 @@ def _parse_exam_date(v):
 
 
 # =============================
+# STORAGE (Backblaze B2)
+# =============================
+def _ext_from_filename(name: str) -> str:
+    name = (name or "").lower().strip()
+    if "." in name:
+        return name.rsplit(".", 1)[-1]
+    return "bin"
+
+def _b2_upload_original_and_preview(*, user_id: int, kind: str, record_id: int, original_filename: str, original_bytes: bytes, preview_b64: str, preview_ext: str = "png"):
+    """
+    Sube:
+    - el archivo original (para conservarlo)
+    - un preview renderizable (imagen) para el frontend
+
+    Guardamos en BD solo el file_key del preview (para no romper frontend).
+    El original queda en una ruta derivable.
+    """
+    # Original
+    orig_ext = _ext_from_filename(original_filename)
+    orig_name = f"original.{orig_ext}"
+    orig = storage_b2.upload_bytes(
+        user_id=user_id,
+        category=kind,
+        object_id=record_id,
+        filename=orig_name,
+        data=original_bytes,
+    )
+
+    # Preview (imagen)
+    try:
+        import base64
+        preview_bytes = base64.b64decode(preview_b64)
+    except Exception:
+        preview_bytes = b""
+
+    prev_name = f"preview.{preview_ext}"
+    prev = storage_b2.upload_bytes(
+        user_id=user_id,
+        category=kind,
+        object_id=record_id,
+        filename=prev_name,
+        data=preview_bytes if preview_bytes else original_bytes,
+    )
+
+    return {
+        "original_key": orig["file_key"],
+        "preview_key": prev["file_key"],
+        "size_bytes": orig["size_bytes"],
+        "sha256": orig["sha256"],
+        "mime_type": orig["mime_type"],
+    }
+
+def _file_path_for_front(db_value: str) -> str:
+    """
+    No cambiamos el frontend:
+    - Si ya es data URL (legacy), lo devolvemos tal cual.
+    - Si es un file_key en B2, devolvemos una URL temporal (presigned) para render <img>.
+    """
+    if not db_value:
+        return None
+    if isinstance(db_value, str) and db_value.startswith("data:"):
+        return db_value
+    # Si parece clave B2
+    try:
+        return storage_b2.generate_presigned_url(file_key=db_value, expires_seconds=3600)
+    except Exception:
+        # Si falla, devolvemos el valor para debugging (mejor que romper)
+        return db_value
+
+# =============================
 # ENDPOINT: ANALYZE (sandbox)
 # =============================
 @router.post("/analyze")
@@ -171,10 +242,39 @@ async def upload_analytic(
         patient_id=patient_id,
         summary=summary,
         differential=diff_list or [],
-        file_path=f"data:image/png;base64,{images[0]}",
+        file_path=None,
         file_hash=file_hash,
         exam_date=final_date,
     )
+
+# ✅ Subimos binarios a Backblaze B2 (original + preview) y guardamos SOLO la clave del preview
+try:
+    # Determinar extensión del preview (si viene de PDF, images[0] suele ser PNG)
+    preview_ext = "png"
+    lower_name = (file.filename or "").lower()
+    if lower_name.endswith(".jpg") or lower_name.endswith(".jpeg"):
+        preview_ext = "jpg"
+    elif lower_name.endswith(".png"):
+        preview_ext = "png"
+
+    up = _b2_upload_original_and_preview(
+        user_id=user.id,
+        kind="analytics",
+        record_id=analytic.id,
+        original_filename=file.filename or "analytic",
+        original_bytes=content,
+        preview_b64=images[0],
+        preview_ext=preview_ext,
+    )
+    # Guardamos en BD la clave del preview (NO base64)
+    analytic.file_path = up["preview_key"]
+    # Mantenemos file_hash como dedupe (ya calculado)
+    db.add(analytic)
+    db.commit()
+    db.refresh(analytic)
+except Exception as e:
+    # Si B2 falla, no rompemos la subida clínica; devolvemos error claro
+    raise HTTPException(500, f"Error subiendo fichero a almacenamiento: {e}")
 
     if markers_raw:
         crud.add_markers_to_analytic(db, analytic.id, markers_raw)
@@ -213,7 +313,7 @@ def by_patient(patient_id: int, db: Session = Depends(get_db), user=Depends(get_
             "differential": a.differential,
             "created_at": a.created_at,
             "exam_date": a.exam_date,
-            "file_path": a.file_path,
+            "file_path": _file_path_for_front(a.file_path),
             "markers": markers,
         })
     return out

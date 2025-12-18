@@ -12,6 +12,7 @@ from openai import OpenAI
 from auth import get_current_user
 from database import get_db
 import crud
+import storage_b2
 from utils_pdf import convert_pdf_to_images
 from utils_imagen import analyze_medical_image
 from prompts_imagen import SYSTEM_PROMPT_IMAGEN
@@ -55,6 +56,61 @@ def _parse_exam_date(exam_date: Optional[str]):
         return None
 
 
+# =============================
+# STORAGE (Backblaze B2)
+# =============================
+def _ext_from_filename(name: str) -> str:
+    name = (name or "").lower().strip()
+    if "." in name:
+        return name.rsplit(".", 1)[-1]
+    return "bin"
+
+def _b2_upload_original_and_preview(*, user_id: int, kind: str, record_id: int, original_filename: str, original_bytes: bytes, preview_b64: str, preview_ext: str = "png"):
+    import base64
+    # Original
+    orig_ext = _ext_from_filename(original_filename)
+    orig_name = f"original.{orig_ext}"
+    orig = storage_b2.upload_bytes(
+        user_id=user_id,
+        category=kind,
+        object_id=record_id,
+        filename=orig_name,
+        data=original_bytes,
+    )
+
+    # Preview
+    try:
+        preview_bytes = base64.b64decode(preview_b64)
+    except Exception:
+        preview_bytes = b""
+
+    prev_name = f"preview.{preview_ext}"
+    prev = storage_b2.upload_bytes(
+        user_id=user_id,
+        category=kind,
+        object_id=record_id,
+        filename=prev_name,
+        data=preview_bytes if preview_bytes else original_bytes,
+    )
+
+    return {
+        "original_key": orig["file_key"],
+        "preview_key": prev["file_key"],
+        "size_bytes": orig["size_bytes"],
+        "sha256": orig["sha256"],
+        "mime_type": orig["mime_type"],
+    }
+
+def _file_path_for_front(db_value: str) -> str:
+    if not db_value:
+        return None
+    if isinstance(db_value, str) and db_value.startswith("data:"):
+        return db_value
+    try:
+        return storage_b2.generate_presigned_url(file_key=db_value, expires_seconds=3600)
+    except Exception:
+        return db_value
+
 def _build_duplicate_response(existing):
     diff_text = ""
     try:
@@ -82,7 +138,7 @@ def _build_duplicate_response(existing):
         "created_at": existing.created_at,
         "exam_date": existing.exam_date,
         "patterns": patterns_list,
-        "file_path": existing.file_path,
+        "file_path": _file_path_for_front(existing.file_path),
         "duplicate": True,
     }
 
@@ -126,7 +182,7 @@ async def upload_imaging(
     normalized_type = (img_type or "imagen").strip().upper()
     exam_date_value = _parse_exam_date(exam_date)
 
-    file_path = f"data:image/png;base64,{img_b64}"
+    file_path = None
 
     imaging = crud.create_imaging(
         db=db,
@@ -139,6 +195,31 @@ async def upload_imaging(
         exam_date=exam_date_value,
     )
 
+# ✅ Subimos binarios a Backblaze B2 (original + preview) y guardamos SOLO la clave del preview
+try:
+    preview_ext = "png"
+    lower_name = (file.filename or "").lower()
+    if lower_name.endswith(".jpg") or lower_name.endswith(".jpeg"):
+        preview_ext = "jpg"
+    elif lower_name.endswith(".png"):
+        preview_ext = "png"
+
+    up = _b2_upload_original_and_preview(
+        user_id=current_user.id,
+        kind="imaging",
+        record_id=imaging.id,
+        original_filename=file.filename or "imaging",
+        original_bytes=content,
+        preview_b64=img_b64,
+        preview_ext=preview_ext,
+    )
+    imaging.file_path = up["preview_key"]
+    db.add(imaging)
+    db.commit()
+    db.refresh(imaging)
+except Exception as e:
+    raise HTTPException(500, f"Error subiendo fichero a almacenamiento: {e}")
+
     crud.add_patterns_to_imaging(db, imaging.id, patterns or [])
 
     return {
@@ -149,7 +230,7 @@ async def upload_imaging(
         "created_at": imaging.created_at,
         "exam_date": imaging.exam_date,
         "patterns": [{"pattern_text": p} for p in (patterns or [])],
-        "file_path": imaging.file_path,
+        "file_path": _file_path_for_front(imaging.file_path),
         "duplicate": False,
     }
 
@@ -195,7 +276,7 @@ def list_imaging_by_patient(
                 "created_at": img.created_at,
                 "exam_date": img.exam_date,
                 "patterns": patterns_list,
-                "file_path": img.file_path,
+                "file_path": _file_path_for_front(img.file_path),
             }
         )
 
