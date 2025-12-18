@@ -7,7 +7,7 @@ router = APIRouter(prefix="/admin/migrate-galenos", tags=["admin-migrate-galenos
 
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "GalenosAdminToken@123"
 
-MIGRATE_GALENOS_VERSION = "SAFE_NO_TRIPLE_QUOTES_V2"
+MIGRATE_GALENOS_VERSION = "STORAGE_QUOTA_V1"
 
 
 def _auth(x_admin_token: str | None):
@@ -86,6 +86,17 @@ SQL_IMAGING = (
     "exam_date DATE,"
     "created_at TIMESTAMP DEFAULT NOW()"
     ");"
+)
+
+
+SQL_ANALYTICS_ALTER_SIZE_BYTES = (
+    "ALTER TABLE analytics "
+    "ADD COLUMN IF NOT EXISTS size_bytes BIGINT DEFAULT 0;"
+)
+
+SQL_IMAGING_ALTER_SIZE_BYTES = (
+    "ALTER TABLE imaging "
+    "ADD COLUMN IF NOT EXISTS size_bytes BIGINT DEFAULT 0;"
 )
 
 SQL_CLINICAL_NOTES = (
@@ -180,6 +191,8 @@ def migrate_init(x_admin_token: str | None = Header(None)):
 
             conn.execute(text(SQL_ANALYTICS))
             conn.execute(text(SQL_IMAGING))
+            conn.execute(text(SQL_ANALYTICS_ALTER_SIZE_BYTES))
+            conn.execute(text(SQL_IMAGING_ALTER_SIZE_BYTES))
             conn.execute(text(SQL_CLINICAL_NOTES))
             conn.execute(text(SQL_TIMELINE_ITEMS))
 
@@ -192,7 +205,7 @@ def migrate_init(x_admin_token: str | None = Header(None)):
         return {
             "status": "ok",
             "version": MIGRATE_GALENOS_VERSION,
-            "message": "Migración aplicada: guardia compartida + visibility + favoritos."
+            "message": "Migración aplicada: añade size_bytes a analytics/imaging para cuota de almacenamiento."
         }
 
     except Exception as e:
