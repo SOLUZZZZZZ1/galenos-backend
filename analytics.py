@@ -217,6 +217,10 @@ async def upload_analytic(
     if not patient:
         raise HTTPException(404, "Paciente no encontrado")
 
+    # ✅ Cuota de almacenamiento (bloqueo duro >11 GB)
+    if crud.is_storage_quota_exceeded(db, user.id):
+        raise HTTPException(status_code=402, detail="STORAGE_QUOTA_EXCEEDED")
+
     content = await file.read()
     file_hash = hashlib.sha256(content).hexdigest()
 

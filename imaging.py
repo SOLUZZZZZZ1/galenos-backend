@@ -157,6 +157,10 @@ async def upload_imaging(
     if not patient:
         raise HTTPException(404, "Paciente no encontrado.")
 
+    # ✅ Cuota de almacenamiento (bloqueo duro >11 GB)
+    if crud.is_storage_quota_exceeded(db, current_user.id):
+        raise HTTPException(status_code=402, detail="STORAGE_QUOTA_EXCEEDED")
+
     content = await file.read()
     if not content:
         raise HTTPException(400, "El fichero está vacío.")
