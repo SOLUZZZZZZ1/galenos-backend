@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Text, Date
+from sqlalchemy import Column, Integer, BigInteger, String, Float, ForeignKey, DateTime, Text, Date
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from database import Base
@@ -100,6 +100,7 @@ class Analytic(Base):
     differential = Column(Text)
     file_path = Column(String)
     file_hash = Column(String)
+    size_bytes = Column(BigInteger, default=0)
     exam_date = Column(Date)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -134,6 +135,7 @@ class Imaging(Base):
     differential = Column(Text)
     file_path = Column(String)
     file_hash = Column(String)
+    size_bytes = Column(BigInteger, default=0)
     exam_date = Column(Date)
     created_at = Column(DateTime, default=datetime.utcnow)
 
