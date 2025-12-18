@@ -24,3 +24,4 @@ httptools
 
 cryptography
 feedparser
+boto3
