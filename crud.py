@@ -394,3 +394,53 @@ def update_doctor_profile(db: Session, profile: DoctorProfile, data: DoctorProfi
     db.commit()
     db.refresh(profile)
     return profile
+
+# ===============================================
+# STORAGE / CUOTA DE ALMACENAMIENTO
+# ===============================================
+from sqlalchemy import func
+
+# Límites de almacenamiento
+MAX_QUOTA_BYTES = 10 * 1024 * 1024 * 1024   # 10 GB
+HARD_LIMIT_BYTES = 11 * 1024 * 1024 * 1024  # margen técnico
+
+def get_used_bytes_for_user(db: Session, user_id: int) -> int:
+    """
+    Devuelve el total de bytes usados por un médico sumando:
+    - analytics.size_bytes
+    - imaging.size_bytes
+    """
+    total_analytics = (
+        db.query(func.coalesce(func.sum(Analytic.size_bytes), 0))
+        .join(Patient, Analytic.patient_id == Patient.id)
+        .filter(Patient.doctor_id == user_id)
+        .scalar()
+    )
+
+    total_imaging = (
+        db.query(func.coalesce(func.sum(Imaging.size_bytes), 0))
+        .join(Patient, Imaging.patient_id == Patient.id)
+        .filter(Patient.doctor_id == user_id)
+        .scalar()
+    )
+
+    return int(total_analytics or 0) + int(total_imaging or 0)
+
+
+def is_storage_quota_exceeded(db: Session, user_id: int) -> bool:
+    """True si supera el límite duro (>11 GB)."""
+    used = get_used_bytes_for_user(db, user_id)
+    return used > HARD_LIMIT_BYTES
+
+
+def get_storage_quota_status(db: Session, user_id: int) -> dict:
+    """Estado de cuota para avisos UX."""
+    used = get_used_bytes_for_user(db, user_id)
+    return {
+        "used_bytes": used,
+        "limit_bytes": MAX_QUOTA_BYTES,
+        "near_limit": used >= 9 * 1024 * 1024 * 1024,
+        "at_limit": used >= MAX_QUOTA_BYTES,
+        "hard_exceeded": used > HARD_LIMIT_BYTES,
+    }
+
