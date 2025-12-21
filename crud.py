@@ -122,6 +122,40 @@ def update_patient(db: Session, patient: Patient, data: PatientUpdate):
     return patient
 
 
+
+# ===============================================
+# ESTADO DE REVISIÓN (Última revisión por médico y paciente)
+# ===============================================
+from datetime import datetime
+from models import PatientReviewState
+
+def get_review_state(db: Session, doctor_id: int, patient_id: int):
+    return (
+        db.query(PatientReviewState)
+        .filter(
+            PatientReviewState.doctor_id == doctor_id,
+            PatientReviewState.patient_id == patient_id,
+        )
+        .first()
+    )
+
+def upsert_review_state(db: Session, doctor_id: int, patient_id: int, last_reviewed_analytic_id: int | None):
+    state = get_review_state(db, doctor_id, patient_id)
+    if state:
+        state.last_reviewed_at = datetime.utcnow()
+        state.last_reviewed_analytic_id = last_reviewed_analytic_id
+    else:
+        state = PatientReviewState(
+            doctor_id=doctor_id,
+            patient_id=patient_id,
+            last_reviewed_at=datetime.utcnow(),
+            last_reviewed_analytic_id=last_reviewed_analytic_id,
+        )
+        db.add(state)
+    db.commit()
+    db.refresh(state)
+    return state
+
 # ===============================================
 # ANALÍTICAS (DE MOMENTO SIN CIFRAR, PARA NO ROMPER UI)
 # ===============================================

@@ -88,6 +88,22 @@ class Patient(Base):
     timeline_items = relationship("TimelineItem", back_populates="patient", cascade="all, delete")
 
 
+
+# =========================
+# PATIENT REVIEW STATE (Última revisión por médico y paciente)
+# =========================
+class PatientReviewState(Base):
+    __tablename__ = "patient_review_state"
+
+    id = Column(Integer, primary_key=True)
+    doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False, index=True)
+
+    last_reviewed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_reviewed_analytic_id = Column(Integer, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 # =========================
 # ANALYTICS
 # =========================

@@ -7,7 +7,7 @@ router = APIRouter(prefix="/admin/migrate-galenos", tags=["admin-migrate-galenos
 
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "GalenosAdminToken@123"
 
-MIGRATE_GALENOS_VERSION = "STORAGE_QUOTA_V1"
+MIGRATE_GALENOS_VERSION = "REVIEW_STATE_V1"
 
 
 def _auth(x_admin_token: str | None):
@@ -120,6 +120,29 @@ SQL_TIMELINE_ITEMS = (
     ");"
 )
 
+
+SQL_PATIENT_REVIEW_STATE = (
+    "CREATE TABLE IF NOT EXISTS patient_review_state ("
+    "id SERIAL PRIMARY KEY,"
+    "doctor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
+    "patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,"
+    "last_reviewed_at TIMESTAMP NOT NULL DEFAULT NOW(),"
+    "last_reviewed_analytic_id INTEGER NULL,"
+    "created_at TIMESTAMP DEFAULT NOW(),"
+    "updated_at TIMESTAMP DEFAULT NOW(),"
+    "UNIQUE (doctor_id, patient_id)"
+    ");"
+)
+
+SQL_PATIENT_REVIEW_STATE_INDEX_1 = (
+    "CREATE INDEX IF NOT EXISTS idx_patient_review_state_doctor "
+    "ON patient_review_state(doctor_id);"
+)
+
+SQL_PATIENT_REVIEW_STATE_INDEX_2 = (
+    "CREATE INDEX IF NOT EXISTS idx_patient_review_state_patient "
+    "ON patient_review_state(patient_id);"
+)
 # =========================
 # GUARDIA (COMPARTIDA)
 # =========================
@@ -195,6 +218,11 @@ def migrate_init(x_admin_token: str | None = Header(None)):
             conn.execute(text(SQL_IMAGING_ALTER_SIZE_BYTES))
             conn.execute(text(SQL_CLINICAL_NOTES))
             conn.execute(text(SQL_TIMELINE_ITEMS))
+
+            # Estado de revisión (última revisión por médico y paciente)
+            conn.execute(text(SQL_PATIENT_REVIEW_STATE))
+            conn.execute(text(SQL_PATIENT_REVIEW_STATE_INDEX_1))
+            conn.execute(text(SQL_PATIENT_REVIEW_STATE_INDEX_2))
 
             conn.execute(text(SQL_GUARD_CASES))
             conn.execute(text(SQL_GUARD_CASES_ALTER_VISIBILITY))
