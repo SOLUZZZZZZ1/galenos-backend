@@ -1,6 +1,6 @@
 # pdf_cosmetic_router.py — PDF quirúrgico Antes/Después (V1) · Galenos
-# FIX: el texto comparativo ahora fluye y no se pierde si excede una caja fija.
-# Endpoint: POST /pdf/cosmetic-compare (StreamingResponse application/pdf)
+# SIN container: texto homogéneo, fluido y multipágina
+# Endpoint: POST /pdf/cosmetic-compare
 
 from typing import Optional
 from datetime import datetime
@@ -37,8 +37,7 @@ def _fetch_image_bytes(file_key: str) -> bytes:
         url = storage_b2.generate_presigned_url(file_key=file_key, expires_seconds=600)
         with urllib.request.urlopen(url) as r:
             return r.read()
-    except Exception as e:
-        print("[PDF-Cosmetic] Error descargando imagen:", repr(e))
+    except Exception:
         return b""
 
 
@@ -61,7 +60,7 @@ def _load_logo_bytes() -> bytes:
 
 
 def _new_page(doc: fitz.Document) -> fitz.Page:
-    return doc.new_page(width=595, height=842)  # A4 aprox
+    return doc.new_page(width=595, height=842)  # A4
 
 
 def _draw_header(page: fitz.Page, *, margin: float, logo_bytes: bytes):
@@ -76,9 +75,8 @@ def _draw_header(page: fitz.Page, *, margin: float, logo_bytes: bytes):
         except Exception:
             x_title = margin
 
-    page.insert_text((x_title, y + 14), "Galenos", fontsize=15, fontname="helv", color=(0, 0, 0))
+    page.insert_text((x_title, y + 14), "Galenos", fontsize=15, fontname="helv")
     page.insert_text((W - margin - 160, y + 16), _now_utc_str(), fontsize=9, fontname="helv", color=(0.35, 0.35, 0.35))
-
     return y + 44
 
 
@@ -163,7 +161,7 @@ def generate_cosmetic_compare_pdf(
     logo_bytes = _load_logo_bytes()
     y = _draw_header(page, margin=margin, logo_bytes=logo_bytes)
 
-    page.insert_text((margin, y), "Comparativa quirúrgica Antes / Después", fontsize=13, fontname="helv", color=(0, 0, 0))
+    page.insert_text((margin, y), "Comparativa quirúrgica Antes / Después", fontsize=13, fontname="helv")
     y += 18
 
     gap = 16
@@ -176,34 +174,20 @@ def generate_cosmetic_compare_pdf(
     rect_pre = fitz.Rect(margin, y + 14, margin + imgW, y + 14 + imgH)
     rect_post = fitz.Rect(margin + imgW + gap, y + 14, margin + imgW + gap + imgW, y + 14 + imgH)
 
-    try:
-        page.insert_image(rect_pre, stream=pre_bytes, keep_proportion=True)
-    except Exception:
-        page.insert_textbox(rect_pre, "No se pudo renderizar la imagen ANTES.", fontsize=10, fontname="helv", color=(0.6, 0, 0))
-    try:
-        page.insert_image(rect_post, stream=post_bytes, keep_proportion=True)
-    except Exception:
-        page.insert_textbox(rect_post, "No se pudo renderizar la imagen DESPUÉS.", fontsize=10, fontname="helv", color=(0.6, 0, 0))
+    page.insert_image(rect_pre, stream=pre_bytes, keep_proportion=True)
+    page.insert_image(rect_post, stream=post_bytes, keep_proportion=True)
 
     y = rect_pre.y1 + 18
 
-    page.insert_text((margin, y), "Descripción comparativa (orientativa)", fontsize=11, fontname="helv", color=(0, 0, 0))
+    page.insert_text((margin, y), "Descripción comparativa (orientativa)", fontsize=11, fontname="helv")
     y += 14
 
-    # Caja suave en la primera página
-    box_h = 180
-    box = fitz.Rect(margin, y, W - margin, min(y + box_h, max_y))
-    page.draw_rect(box, color=(0.85, 0.85, 0.85), fill=(0.97, 0.97, 0.98), width=0.8)
-
-    x_text = margin
-    y_text = y
-
+    lines = _wrap_text_lines(compare_text, width_chars=92)
     page, y = _draw_multiline_flow(
         doc, page, lines,
-        x=x_text, y=y_text,
+        x=margin, y=y,
         max_y=max_y,
         font_size=9.5, line_height=12.0,
-        color=(0.1, 0.1, 0.1),
     )
 
     y += 16
@@ -212,28 +196,24 @@ def generate_cosmetic_compare_pdf(
         if y + 24 > max_y:
             page = _new_page(doc)
             y = 48
-
-        page.insert_text((margin, y), "Nota del cirujano", fontsize=11, fontname="helv", color=(0, 0, 0))
+        page.insert_text((margin, y), "Nota del cirujano", fontsize=11, fontname="helv")
         y += 14
-
         note_lines = _wrap_text_lines(note, width_chars=92)
         page, y = _draw_multiline_flow(
             doc, page, note_lines,
             x=margin, y=y,
             max_y=max_y,
             font_size=9.5, line_height=12.0,
-            color=(0.1, 0.1, 0.1),
         )
         y += 10
 
-    # Disclaimer en la última página
     disclaimer = (
         "Documento de apoyo descriptivo.\n"
         "No constituye diagnóstico ni garantía de resultado.\n"
         "La interpretación clínica y la decisión final corresponden al médico responsable."
     )
     foot = fitz.Rect(margin, H - 90, W - margin, H - 36)
-    page.insert_textbox(foot, disclaimer, fontsize=8.5, fontname="helv", color=(0.35, 0.35, 0.35), align=0)
+    page.insert_textbox(foot, disclaimer, fontsize=8.5, fontname="helv", color=(0.35, 0.35, 0.35))
 
     pdf_bytes = doc.tobytes()
     doc.close()
