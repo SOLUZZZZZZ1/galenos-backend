@@ -146,6 +146,7 @@ async def upload_cosmetic_image(
         raise HTTPException(400, "El fichero está vacío.")
 
     file_hash = hashlib.sha256(content_bytes).hexdigest()
+
     existing = crud.get_imaging_by_hash(db, patient.id, file_hash)
     if existing:
         return {
@@ -155,6 +156,7 @@ async def upload_cosmetic_image(
             "exam_date": existing.exam_date,
             "file_path": _file_path_for_front(existing.file_path),
             "duplicate": True,
+            "note": "Duplicado detectado. Si esta imagen fue subida como radiológica, súbela con otro archivo o cambia el tipo desde la ficha (mejora futura).",
         }
 
     preview_b64 = _prepare_preview_b64(file, content_bytes)
@@ -262,4 +264,88 @@ def analyze_cosmetic_image(
         "ai_description_draft": img.ai_description_draft,
         "ai_description_updated_at": img.ai_description_updated_at,
         "disclaimer": "Análisis descriptivo. No diagnóstico.",
+    }
+
+
+@router.post("/compare")
+def compare_cosmetic_images(
+    pre_image_id: int = Form(...),
+    post_image_id: int = Form(...),
+    context: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    pre = (
+        db.query(Imaging)
+        .join(Patient, Patient.id == Imaging.patient_id)
+        .filter(Imaging.id == pre_image_id, Patient.doctor_id == current_user.id)
+        .first()
+    )
+    post = (
+        db.query(Imaging)
+        .join(Patient, Patient.id == Imaging.patient_id)
+        .filter(Imaging.id == post_image_id, Patient.doctor_id == current_user.id)
+        .first()
+    )
+    if not pre or not post:
+        raise HTTPException(404, "Imagen 'Antes' o 'Después' no encontrada o no autorizada.")
+
+    if not (str(pre.type or "").upper().startswith("COSMETIC") and str(post.type or "").upper().startswith("COSMETIC")):
+        raise HTTPException(400, "Las imágenes deben ser COSMETIC_* para comparativa quirúrgica.")
+
+    pre_bytes = _fetch_preview_bytes(pre.file_path)
+    post_bytes = _fetch_preview_bytes(post.file_path)
+    if not pre_bytes or not post_bytes:
+        raise HTTPException(500, "No se pudieron cargar las imágenes desde almacenamiento.")
+
+    compare_ctx = (
+        "Comparación Antes vs Después.\n"
+        "Primera imagen: ANTES (preoperatorio).\n"
+        "Segunda imagen: DESPUÉS (postoperatorio/seguimiento).\n"
+        "Describe cambios visibles de forma prudente y NO valorativa.\n"
+        "Incluye advertencias de fiabilidad (luz/ángulo/distancia/calidad).\n"
+    )
+    extra = (context or "").strip()
+    if extra:
+        compare_ctx += f"Contexto adicional: {extra}"
+
+    client = _get_openai_client()
+    model = os.getenv("GALENOS_VISION_MODEL_COSMETIC") or os.getenv("GALENOS_VISION_MODEL") or "gpt-4o"
+
+    try:
+        b64_pre = base64.b64encode(pre_bytes).decode("utf-8")
+        b64_post = base64.b64encode(post_bytes).decode("utf-8")
+
+        user_content = [
+            {"type": "text", "text": "Genera una comparativa descriptiva siguiendo el prompt del sistema.\n" + compare_ctx},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_pre}"}},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_post}"}},
+        ]
+
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": [{"type": "text", "text": PROMPT_IMAGEN_CIRUGIA}]},
+                {"role": "user", "content": user_content},
+            ],
+        )
+
+        msg = resp.choices[0].message.content
+        if isinstance(msg, list) and msg:
+            compare_text = str(msg[0].text or "").strip()
+        else:
+            compare_text = str(msg or "").strip()
+
+    except Exception as e:
+        print("[Cosmetic-Compare] Error:", repr(e))
+        raise HTTPException(500, "Error generando la comparativa con IA.")
+
+    if not compare_text:
+        raise HTTPException(500, "La IA no devolvió una comparativa válida.")
+
+    return {
+        "pre_image_id": int(pre_image_id),
+        "post_image_id": int(post_image_id),
+        "compare_text": compare_text,
+        "disclaimer": "Comparativa descriptiva. No diagnóstico.",
     }
