@@ -117,8 +117,6 @@ class Analytic(Base):
     file_path = Column(String)
     file_hash = Column(String)
     size_bytes = Column(BigInteger, default=0)
-    ai_description_draft = Column(Text)
-    ai_description_updated_at = Column(DateTime)
     exam_date = Column(Date)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -154,8 +152,6 @@ class Imaging(Base):
     file_path = Column(String)
     file_hash = Column(String)
     size_bytes = Column(BigInteger, default=0)
-    ai_description_draft = Column(Text)
-    ai_description_updated_at = Column(DateTime)
     exam_date = Column(Date)
     created_at = Column(DateTime, default=datetime.utcnow)
 
