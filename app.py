@@ -2,6 +2,7 @@ import os
 from fastapi import FastAPI, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+
 from guardia_router import router as guardia_router
 from doctor_profile_extra import router as doctor_profile_extra_router
 from admin_doctors import router as admin_doctors_router
@@ -30,14 +31,12 @@ from auth import (
 import patients
 import analytics
 import imaging
+import imaging_cosmetic_router  # ✅ AÑADIDO: router cirugía/cosmetic
 import notes
 import timeline
 import stripe_payments
 import migrate_galenos
 import doctor_profile
-
-
-
 
 # ✅ NUEVO: router comparativa 6/12/18/24
 import analytics_compare_router
@@ -46,9 +45,6 @@ import community_router
 import weekly_contest_router
 import pdf_cosmetic_router
 import review_state_router
-
-
-
 
 
 # ======================================================
@@ -180,6 +176,9 @@ def create_access_request(
 app.include_router(patients.router)
 app.include_router(analytics.router)
 app.include_router(imaging.router)
+
+app.include_router(imaging_cosmetic_router.router)  # ✅ AÑADIDO: /imaging/cosmetic/* (upload/analyze/compare)
+
 app.include_router(notes.router)
 app.include_router(timeline.router)
 app.include_router(stripe_payments.router)
@@ -197,4 +196,3 @@ app.include_router(migrate_community.router)
 app.include_router(community_router.router)
 app.include_router(weekly_contest_router.router)
 app.include_router(pdf_cosmetic_router.router)
-
