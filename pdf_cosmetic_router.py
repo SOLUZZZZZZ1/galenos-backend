@@ -1,16 +1,13 @@
 # pdf_cosmetic_router.py — PDF quirúrgico Antes/Después (V1) · Galenos
-# Endpoint: POST /pdf/cosmetic-compare
-# - Genera un PDF con 2 imágenes (ANTES / DESPUÉS) + texto comparativo + nota opcional
-# - NO guarda el PDF por defecto (solo descarga)
-# - Protegido por JWT (médico) y ownership (patient.doctor_id)
-#
-# Dependencias: PyMuPDF (fitz) ya está en el backend (pymupdf).
+# FIX: el texto comparativo ahora fluye y no se pierde si excede una caja fija.
+# Endpoint: POST /pdf/cosmetic-compare (StreamingResponse application/pdf)
 
 from typing import Optional
 from datetime import datetime
 import os
 import urllib.request
 import io
+import textwrap as _tw
 
 import fitz  # PyMuPDF
 from fastapi import APIRouter, Depends, HTTPException
@@ -50,7 +47,6 @@ def _now_utc_str() -> str:
 
 
 def _load_logo_bytes() -> bytes:
-    # Opcional: GALENOS_LOGO_URL (http/https) o GALENOS_LOGO_B2_KEY
     url = os.getenv("GALENOS_LOGO_URL") or ""
     key = os.getenv("GALENOS_LOGO_B2_KEY") or ""
     if key:
@@ -62,6 +58,62 @@ def _load_logo_bytes() -> bytes:
         except Exception:
             return b""
     return b""
+
+
+def _new_page(doc: fitz.Document) -> fitz.Page:
+    return doc.new_page(width=595, height=842)  # A4 aprox
+
+
+def _draw_header(page: fitz.Page, *, margin: float, logo_bytes: bytes):
+    W = page.rect.width
+    y = margin
+    x_title = margin
+
+    if logo_bytes:
+        try:
+            page.insert_image(fitz.Rect(margin, y, margin + 28, y + 28), stream=logo_bytes)
+            x_title = margin + 34
+        except Exception:
+            x_title = margin
+
+    page.insert_text((x_title, y + 14), "Galenos", fontsize=15, fontname="helv", color=(0, 0, 0))
+    page.insert_text((W - margin - 160, y + 16), _now_utc_str(), fontsize=9, fontname="helv", color=(0.35, 0.35, 0.35))
+
+    return y + 44
+
+
+def _wrap_text_lines(text: str, width_chars: int = 92):
+    out = []
+    for para in (text or "").splitlines():
+        p = para.rstrip()
+        if not p.strip():
+            out.append("")
+            continue
+        out.extend(_tw.wrap(p, width=width_chars, break_long_words=False, replace_whitespace=False))
+    return out
+
+
+def _draw_multiline_flow(
+    doc: fitz.Document,
+    page: fitz.Page,
+    lines: list[str],
+    *,
+    x: float,
+    y: float,
+    max_y: float,
+    font_size: float = 9.5,
+    line_height: float = 12.0,
+    color=(0.1, 0.1, 0.1),
+):
+    i = 0
+    while i < len(lines):
+        if y + line_height > max_y:
+            page = _new_page(doc)
+            y = 48
+        page.insert_text((x, y), lines[i], fontsize=font_size, fontname="helv", color=color)
+        y += line_height
+        i += 1
+    return page, y
 
 
 @router.post("/cosmetic-compare")
@@ -100,36 +152,20 @@ def generate_cosmetic_compare_pdf(
 
     note = (payload.note or "").strip()
 
-    # ----------
-    # Crear PDF (A4) con PyMuPDF
-    # ----------
     doc = fitz.open()
-    page = doc.new_page(width=595, height=842)  # A4 aprox (pt)
-    W = page.rect.width
-    H = page.rect.height
+    page = _new_page(doc)
 
     margin = 36
-    y = margin
+    W = page.rect.width
+    H = page.rect.height
+    max_y = H - 110
 
-    # Logo pequeño o fallback a texto
     logo_bytes = _load_logo_bytes()
-    x_title = margin
-    if logo_bytes:
-        try:
-            page.insert_image(fitz.Rect(margin, y, margin + 28, y + 28), stream=logo_bytes)
-            x_title = margin + 34
-        except Exception:
-            x_title = margin
-
-    # Cabecera
-    page.insert_text((x_title, y + 14), "Galenos", fontsize=15, fontname="helv", color=(0, 0, 0))
-    page.insert_text((W - margin - 160, y + 16), _now_utc_str(), fontsize=9, fontname="helv", color=(0.35, 0.35, 0.35))
-    y += 44
+    y = _draw_header(page, margin=margin, logo_bytes=logo_bytes)
 
     page.insert_text((margin, y), "Comparativa quirúrgica Antes / Después", fontsize=13, fontname="helv", color=(0, 0, 0))
     y += 18
 
-    # Imágenes lado a lado
     gap = 16
     imgW = (W - margin * 2 - gap) / 2
     imgH = 220
@@ -151,38 +187,47 @@ def generate_cosmetic_compare_pdf(
 
     y = rect_pre.y1 + 18
 
-    # Texto comparativo IA
     page.insert_text((margin, y), "Descripción comparativa (orientativa)", fontsize=11, fontname="helv", color=(0, 0, 0))
-    y += 12
+    y += 14
 
-    box = fitz.Rect(margin, y, W - margin, y + 170)
+    # Caja suave en la primera página
+    box_h = 180
+    box = fitz.Rect(margin, y, W - margin, min(y + box_h, max_y))
     page.draw_rect(box, color=(0.85, 0.85, 0.85), fill=(0.97, 0.97, 0.98), width=0.8)
-    page.insert_textbox(
-        fitz.Rect(box.x0 + 10, box.y0 + 8, box.x1 - 10, box.y1 - 8),
-        compare_text,
-        fontsize=9.5,
-        fontname="helv",
+
+    lines = _wrap_text_lines(compare_text, width_chars=92)
+    x_text = box.x0 + 10
+    y_text = box.y0 + 14
+
+    page, y = _draw_multiline_flow(
+        doc, page, lines,
+        x=x_text, y=y_text,
+        max_y=max_y,
+        font_size=9.5, line_height=12.0,
         color=(0.1, 0.1, 0.1),
-        align=0,
     )
-    y = box.y1 + 16
 
-    # Nota del cirujano (solo si existe)
+    y += 16
+
     if note:
-        page.insert_text((margin, y), "Nota del cirujano", fontsize=11, fontname="helv", color=(0, 0, 0))
-        y += 12
-        note_box = fitz.Rect(margin, y, W - margin, y + 110)
-        page.draw_rect(note_box, color=(0.90, 0.90, 0.90), fill=(1, 1, 1), width=0.8)
-        page.insert_textbox(
-            fitz.Rect(note_box.x0 + 10, note_box.y0 + 8, note_box.x1 - 10, note_box.y1 - 8),
-            note,
-            fontsize=9.5,
-            fontname="helv",
-            color=(0.1, 0.1, 0.1),
-            align=0,
-        )
+        if y + 24 > max_y:
+            page = _new_page(doc)
+            y = 48
 
-    # Disclaimer pie
+        page.insert_text((margin, y), "Nota del cirujano", fontsize=11, fontname="helv", color=(0, 0, 0))
+        y += 14
+
+        note_lines = _wrap_text_lines(note, width_chars=92)
+        page, y = _draw_multiline_flow(
+            doc, page, note_lines,
+            x=margin, y=y,
+            max_y=max_y,
+            font_size=9.5, line_height=12.0,
+            color=(0.1, 0.1, 0.1),
+        )
+        y += 10
+
+    # Disclaimer en la última página
     disclaimer = (
         "Documento de apoyo descriptivo.\n"
         "No constituye diagnóstico ni garantía de resultado.\n"
