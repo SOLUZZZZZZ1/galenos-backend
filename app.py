@@ -45,7 +45,8 @@ import migrate_community
 import community_router
 import weekly_contest_router
 import pdf_cosmetic_router
-import patient_review_state_router
+import review_state_router
+
 
 
 
@@ -191,7 +192,7 @@ app.include_router(medical_news_router)
 
 # ✅ NUEVO
 app.include_router(analytics_compare_router.router)
-app.include_router(patient_review_state_router.router)
+app.include_router(review_state_router.router)
 app.include_router(migrate_community.router)
 app.include_router(community_router.router)
 app.include_router(weekly_contest_router.router)
