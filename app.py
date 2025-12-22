@@ -30,6 +30,7 @@ from auth import (
 import patients
 import analytics
 import imaging
+import imaging_cosmetic_router
 import notes
 import timeline
 import stripe_payments
@@ -42,7 +43,6 @@ import analytics_compare_router
 import migrate_community
 import community_router
 import weekly_contest_router
-import review_state_router
 
 
 
@@ -173,9 +173,9 @@ def create_access_request(
 # INCLUDE ROUTERS
 # ======================================================
 app.include_router(patients.router)
-app.include_router(review_state_router.router)
 app.include_router(analytics.router)
 app.include_router(imaging.router)
+app.include_router(imaging_cosmetic_router.router)
 app.include_router(notes.router)
 app.include_router(timeline.router)
 app.include_router(stripe_payments.router)

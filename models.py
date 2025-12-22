@@ -88,22 +88,6 @@ class Patient(Base):
     timeline_items = relationship("TimelineItem", back_populates="patient", cascade="all, delete")
 
 
-
-# =========================
-# PATIENT REVIEW STATE (Última revisión por médico y paciente)
-# =========================
-class PatientReviewState(Base):
-    __tablename__ = "patient_review_state"
-
-    id = Column(Integer, primary_key=True)
-    doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False, index=True)
-
-    last_reviewed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    last_reviewed_analytic_id = Column(Integer, nullable=True)
-
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 # =========================
 # ANALYTICS
 # =========================
@@ -117,6 +101,8 @@ class Analytic(Base):
     file_path = Column(String)
     file_hash = Column(String)
     size_bytes = Column(BigInteger, default=0)
+    ai_description_draft = Column(Text)
+    ai_description_updated_at = Column(DateTime)
     exam_date = Column(Date)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -152,6 +138,8 @@ class Imaging(Base):
     file_path = Column(String)
     file_hash = Column(String)
     size_bytes = Column(BigInteger, default=0)
+    ai_description_draft = Column(Text)
+    ai_description_updated_at = Column(DateTime)
     exam_date = Column(Date)
     created_at = Column(DateTime, default=datetime.utcnow)
 
