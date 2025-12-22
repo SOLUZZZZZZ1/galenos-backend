@@ -195,9 +195,8 @@ def generate_cosmetic_compare_pdf(
     box = fitz.Rect(margin, y, W - margin, min(y + box_h, max_y))
     page.draw_rect(box, color=(0.85, 0.85, 0.85), fill=(0.97, 0.97, 0.98), width=0.8)
 
-    lines = _wrap_text_lines(compare_text, width_chars=92)
-    x_text = box.x0 + 10
-    y_text = box.y0 + 14
+    x_text = margin
+    y_text = y
 
     page, y = _draw_multiline_flow(
         doc, page, lines,
