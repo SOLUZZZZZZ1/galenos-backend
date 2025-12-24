@@ -176,6 +176,7 @@ async def upload_cosmetic_image(
         file_path=None,
         file_hash=file_hash,
         exam_date=exam_date_value,
+        timeline_item_type="imaging_cosmetic",
     )
 
     try:

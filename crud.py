@@ -266,6 +266,7 @@ def create_imaging(
     file_path: str | None = None,
     file_hash: str | None = None,
     exam_date: date | None = None,
+    timeline_item_type: str = "imaging",
 ):
     imaging = Imaging(
         patient_id=patient_id,
@@ -280,10 +281,13 @@ def create_imaging(
     db.commit()
     db.refresh(imaging)
 
+    if not timeline_item_type:
+        timeline_item_type = "imaging"
+
     # Timeline
     timeline = TimelineItem(
         patient_id=patient_id,
-        item_type="imaging",
+        item_type=timeline_item_type,
         item_id=imaging.id,
     )
     db.add(timeline)
