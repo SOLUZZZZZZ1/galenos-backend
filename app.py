@@ -37,6 +37,10 @@ import timeline
 import stripe_payments
 import migrate_galenos
 import doctor_profile
+import auth_password_reset_router
+import auth_password_reset_router
+
+
 
 # ✅ NUEVO: router comparativa 6/12/18/24
 import analytics_compare_router
@@ -188,6 +192,10 @@ app.include_router(guardia_router)
 app.include_router(doctor_profile_extra_router)
 app.include_router(admin_doctors_router)
 app.include_router(medical_news_router)
+app.include_router(auth_password_reset_router.router)
+app.include_router(auth_password_reset_router.router)
+
+
 
 # ✅ NUEVO
 app.include_router(analytics_compare_router.router)
