@@ -10,8 +10,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text as sql_text, or_
 from datetime import datetime
-import json
-import os
 from typing import Optional, List, Dict, Any, Literal
 
 from database import get_db
@@ -19,54 +17,22 @@ from auth import get_current_user
 from models import GuardCase, GuardMessage, GuardFavorite, DoctorProfile, Analytic, Imaging, Patient
 
 from moderation_utils import quick_block_reason
-from prompts_de_guardia_moderation import DE_GUARDIA_MODERATION_PROMPT
 
 import crud
 from pydantic import BaseModel, Field
 
-from openai import OpenAI
-
 router = APIRouter(prefix="/guard", tags=["guardia"])
-GUARDIA_MODERATION_VERSION = "STRICT_V4"
-print("[DeGuardia] Moderation version:", GUARDIA_MODERATION_VERSION)
+GUARDIA_MODERATION_VERSION = "DETERMINISTIC_STRICT_V1"
+
+
 
 
 # ======================
-# Moderación fuerte (De Guardia)
-# Capa 1: determinista (quick_block_reason) — SIEMPRE activa
-# Capa 2: IA estricta — si falla, NO bloquea; si REJECT, bloquea
+# Diagnóstico moderación
 # ======================
-def _moderate_guard_text(text: str) -> tuple[bool, str]:
-    api_key = os.getenv("OPENAI_API_KEY") or ""
-    if not api_key:
-        return True, ""  # sin IA
-
-    client = OpenAI(api_key=api_key)
-    model = os.getenv("GALENOS_MODERATION_MODEL") or "gpt-4o-mini"
-
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": DE_GUARDIA_MODERATION_PROMPT},
-                {"role": "user", "content": (text or "").strip()},
-            ],
-        )
-        raw = resp.choices[0].message.content
-        raw_str = raw if isinstance(raw, str) else json.dumps(raw)
-        data = json.loads(raw_str)
-
-        decision = str(data.get("decision", "")).upper().strip()
-        reason = str(data.get("reason", "")).strip()
-
-        if decision == "REJECT":
-            return False, reason or "Contenido no permitido."
-        return True, ""
-    except Exception as e:
-        print("[DeGuardia][Moderation] IA error:", repr(e))
-        return True, ""
-
-
+@router.get("/moderation/version")
+def moderation_version():
+    return {"version": GUARDIA_MODERATION_VERSION}
 
 # ======================
 # Schemas entrada
@@ -297,15 +263,6 @@ def _require_owner(db: Session, case_id: int, current_user_id: int) -> GuardCase
     return c
 
 
-
-# ======================
-# Diagnóstico moderación
-# ======================
-@router.get("/moderation/version")
-def moderation_version():
-    return {"version": GUARDIA_MODERATION_VERSION}
-
-
 # ======================
 # OPTIONS adjuntos por paciente (solo para tus pacientes)
 # ======================
@@ -456,13 +413,7 @@ def create_case(
 
     blocked, reason = quick_block_reason(content)
     if blocked:
-        print("[DeGuardia][BLOCK][case]", reason, "TEXT=", content[:120])
         raise HTTPException(400, f"De Guardia es un espacio clínico profesional. {reason}")
-
-    ok, ai_reason = _moderate_guard_text(content)
-    if not ok:
-        print("[DeGuardia][REJECT][case]", ai_reason)
-        raise HTTPException(400, f"De Guardia es un espacio clínico profesional. {ai_reason}")
 
     patient_ref_id = None
     if payload.patient_id:
@@ -536,13 +487,7 @@ def add_message(
 
     blocked, reason = quick_block_reason(text)
     if blocked:
-        print("[DeGuardia][BLOCK][msg]", reason, "TEXT=", text[:120])
         raise HTTPException(400, f"De Guardia es un espacio clínico profesional. {reason}")
-
-    ok, ai_reason = _moderate_guard_text(text)
-    if not ok:
-        print("[DeGuardia][REJECT][msg]", ai_reason)
-        raise HTTPException(400, f"De Guardia es un espacio clínico profesional. {ai_reason}")
 
     attachments = _attachments_to_list(payload.attachments)
     # solo puedes adjuntar cosas de tus pacientes
