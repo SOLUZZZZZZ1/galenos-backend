@@ -101,17 +101,40 @@ def _b2_upload_original_and_preview(*, user_id: int, kind: str, record_id: int, 
         "mime_type": orig["mime_type"],
     }
 
-def _file_path_for_front(db_value: str) -> str:
+
+def _file_path_for_front(db_value: str, *, user_id: int | None = None, record_id: int | None = None, kind: str = "imaging") -> str:
+    """
+    Convierte el valor guardado en BD (file_path) a una URL usable por frontend.
+
+    - Caso normal: db_value es una key completa de B2 (prod/users/...).
+    - Caso legacy: db_value es un nombre simple como "preview.jpg".
+      Si tenemos user_id + record_id, intentamos reconstruir la key.
+    """
     if not db_value:
         return None
     if isinstance(db_value, str) and db_value.startswith("data:"):
         return db_value
-    try:
-        return storage_b2.generate_presigned_url(file_key=db_value, expires_seconds=3600)
-    except Exception:
+    if isinstance(db_value, str) and (db_value.startswith("http://") or db_value.startswith("https://")):
         return db_value
 
-def _build_duplicate_response(existing):
+    val = str(db_value).strip()
+
+    # Legacy: solo filename (sin /)
+    if "/" not in val and user_id and record_id:
+        candidate = f"prod/users/{int(user_id)}/{kind}/{int(record_id)}/{val}"
+        try:
+            return storage_b2.generate_presigned_url(file_key=candidate, expires_seconds=3600)
+        except Exception:
+            # Si no existe, devolvemos None para que el frontend no intente abrir "preview.jpg"
+            return None
+
+    try:
+        return storage_b2.generate_presigned_url(file_key=val, expires_seconds=3600)
+    except Exception:
+        return None
+
+
+def _build_duplicate_response(existing, *, user_id: int | None = None):
     diff_text = ""
     try:
         val = json.loads(existing.differential) if existing.differential else []
@@ -138,7 +161,7 @@ def _build_duplicate_response(existing):
         "created_at": existing.created_at,
         "exam_date": existing.exam_date,
         "patterns": patterns_list,
-        "file_path": _file_path_for_front(existing.file_path),
+        "file_path": _file_path_for_front(existing.file_path, user_id=user_id, record_id=existing.id, kind="imaging"),
         "duplicate": True,
     }
 
@@ -169,7 +192,7 @@ async def upload_imaging(
 
     existing = crud.get_imaging_by_hash(db, patient.id, file_hash)
     if existing:
-        return _build_duplicate_response(existing)
+        return _build_duplicate_response(existing, user_id=current_user.id)
 
     img_b64 = _prepare_single_image_b64(file, content)
     client = _get_openai_client()
@@ -234,7 +257,7 @@ async def upload_imaging(
         "created_at": imaging.created_at,
         "exam_date": imaging.exam_date,
         "patterns": [{"pattern_text": p} for p in (patterns or [])],
-        "file_path": _file_path_for_front(imaging.file_path),
+        "file_path": _file_path_for_front(imaging.file_path, user_id=current_user.id, record_id=imaging.id, kind="imaging"),
         "duplicate": False,
     }
 
@@ -279,7 +302,7 @@ def list_imaging_by_patient(
                 "created_at": img.created_at,
                 "exam_date": img.exam_date,
                 "patterns": patterns_list,
-                "file_path": _file_path_for_front(img.file_path),
+                "file_path": _file_path_for_front(img.file_path, user_id=current_user.id, record_id=img.id, kind="imaging"),
             }
         )
 
