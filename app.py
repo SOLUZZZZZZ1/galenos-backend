@@ -31,16 +31,13 @@ from auth import (
 import patients
 import analytics
 import imaging
+import imaging_chat_router
 import imaging_cosmetic_router  # ✅ AÑADIDO: router cirugía/cosmetic
 import notes
 import timeline
 import stripe_payments
 import migrate_galenos
 import doctor_profile
-import auth_password_reset_router
-import auth_password_reset_router
-
-
 
 # ✅ NUEVO: router comparativa 6/12/18/24
 import analytics_compare_router
@@ -180,6 +177,7 @@ def create_access_request(
 app.include_router(patients.router)
 app.include_router(analytics.router)
 app.include_router(imaging.router)
+app.include_router(imaging_chat_router.router)
 
 app.include_router(imaging_cosmetic_router.router)  # ✅ AÑADIDO: /imaging/cosmetic/* (upload/analyze/compare)
 
@@ -192,10 +190,6 @@ app.include_router(guardia_router)
 app.include_router(doctor_profile_extra_router)
 app.include_router(admin_doctors_router)
 app.include_router(medical_news_router)
-app.include_router(auth_password_reset_router.router)
-app.include_router(auth_password_reset_router.router)
-
-
 
 # ✅ NUEVO
 app.include_router(analytics_compare_router.router)
