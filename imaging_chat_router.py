@@ -29,7 +29,9 @@ class ImagingAskIn(BaseModel):
 
 
 class ImagingChatIn(BaseModel):
-    imaging_id: int = Field(..., ge=1)
+    # Compat: algunos frontends envían image_id en vez de imaging_id
+    imaging_id: int | None = Field(None, ge=1)
+    image_id: int | None = Field(None, ge=1)
     question: str = Field(..., min_length=2, max_length=500)
 
 
@@ -146,7 +148,10 @@ def imaging_chat_compat(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    img = _fetch_imaging_or_404(db, int(payload.imaging_id), current_user.id)
+    imaging_id = payload.imaging_id or payload.image_id
+    if not imaging_id:
+        raise HTTPException(422, "Falta imaging_id")
+    img = _fetch_imaging_or_404(db, int(imaging_id), current_user.id)
     patterns = _fetch_patterns(db, img.id)
     ctx = _build_context(img, patterns)
 
