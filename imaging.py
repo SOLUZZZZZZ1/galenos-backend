@@ -56,6 +56,45 @@ def _parse_exam_date(exam_date: Optional[str]):
         return None
 
 
+
+# =============================
+# UI FAMILY (clasificación ligera para overlays)
+# =============================
+def _classify_ui_family_from_image(client: OpenAI, *, image_b64: str) -> dict:
+    """Clasificador visual ligero para UX (overlays). NO diagnóstico."""
+    try:
+        model = os.getenv("GALENOS_UI_FAMILY_MODEL") or "gpt-4o-mini"
+        prompt = (
+            "Clasifica esta imagen médica en una de estas familias para UX:\n"
+            "MSK (musculoesquelética), VASCULAR (eco-doppler vasos), CARDIAC (eco corazón), "
+            "ABDOMEN (eco abdomen/órganos), LUNG (eco pulmón/pleura), OTHER.\n"
+            "No diagnostiques. Si no estás razonablemente seguro, usa OTHER.\n"
+            "Responde SOLO JSON: {\"family\":\"MSK|VASCULAR|CARDIAC|ABDOMEN|LUNG|OTHER\",\"confidence\":0-1}."
+        )
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "Eres un clasificador de familia de imagen para UX. No diagnóstico."},
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+                ]},
+            ],
+        )
+        raw = resp.choices[0].message.content
+        raw_str = raw if isinstance(raw, str) else json.dumps(raw)
+        data = json.loads(raw_str)
+        fam = str(data.get("family", "OTHER")).upper().strip()
+        conf = float(data.get("confidence", 0) or 0)
+        if fam not in ["MSK","VASCULAR","CARDIAC","ABDOMEN","LUNG","OTHER"]:
+            fam = "OTHER"
+        conf = 0.0 if conf < 0 else (1.0 if conf > 1 else conf)
+        return {"family": fam, "confidence": conf}
+    except Exception as e:
+        print("[UI-FAMILY] Error:", repr(e))
+        return {"family": "OTHER", "confidence": 0.0}
+
+
 # =============================
 # STORAGE (Backblaze B2)
 # =============================
@@ -163,6 +202,8 @@ def _build_duplicate_response(existing, *, user_id: int | None = None):
         "patterns": patterns_list,
         "file_path": _file_path_for_front(existing.file_path, user_id=user_id, record_id=existing.id, kind="imaging"),
         "duplicate": True,
+        "ui_family": "OTHER",
+        "ui_confidence": 0.0,
     }
 
 
@@ -205,6 +246,10 @@ async def upload_imaging(
         system_prompt=SYSTEM_PROMPT_IMAGEN,
         extra_context=context,
     )
+
+    ui = _classify_ui_family_from_image(client, image_b64=img_b64)
+    ui_family = ui.get("family", "OTHER")
+    ui_confidence = ui.get("confidence", 0.0)
 
     normalized_type = (img_type or "imagen").strip().upper()
     exam_date_value = _parse_exam_date(exam_date)
@@ -259,6 +304,8 @@ async def upload_imaging(
         "patterns": [{"pattern_text": p} for p in (patterns or [])],
         "file_path": _file_path_for_front(imaging.file_path, user_id=current_user.id, record_id=imaging.id, kind="imaging"),
         "duplicate": False,
+        "ui_family": ui_family,
+        "ui_confidence": ui_confidence,
     }
 
 @router.get("/by-patient/{patient_id}")
