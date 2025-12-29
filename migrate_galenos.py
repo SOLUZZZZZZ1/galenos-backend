@@ -120,6 +120,19 @@ SQL_CLINICAL_NOTES = (
     ");"
 )
 
+# =========================
+# MSK OVERLAY (geometría) — IA
+# =========================
+SQL_IMAGING_ALTER_MSK_OVERLAY_JSON = (
+    "ALTER TABLE imaging "
+    "ADD COLUMN IF NOT EXISTS msk_overlay_json JSONB;"
+)
+
+SQL_IMAGING_ALTER_MSK_OVERLAY_CONFIDENCE = (
+    "ALTER TABLE imaging "
+    "ADD COLUMN IF NOT EXISTS msk_overlay_confidence FLOAT DEFAULT 0;"
+)
+
 SQL_TIMELINE_ITEMS = (
     "CREATE TABLE IF NOT EXISTS timeline_items ("
     "id SERIAL PRIMARY KEY,"
@@ -205,6 +218,8 @@ def migrate_init(x_admin_token: str | None = Header(None)):
             conn.execute(text(SQL_IMAGING_ALTER_SIZE_BYTES))
             conn.execute(text(SQL_IMAGING_ALTER_AI_DESCRIPTION))
             conn.execute(text(SQL_IMAGING_ALTER_AI_DESCRIPTION_TS))
+            conn.execute(text(SQL_IMAGING_ALTER_MSK_OVERLAY_JSON))
+            conn.execute(text(SQL_IMAGING_ALTER_MSK_OVERLAY_CONFIDENCE))
             conn.execute(text(SQL_CLINICAL_NOTES))
             conn.execute(text(SQL_TIMELINE_ITEMS))
 
