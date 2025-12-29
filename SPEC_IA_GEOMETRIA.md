@@ -1,0 +1,1 @@
+# SPEC IA GEOMETRIA (placeholder)
