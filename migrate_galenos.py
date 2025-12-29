@@ -7,7 +7,7 @@ router = APIRouter(prefix="/admin/migrate-galenos", tags=["admin-migrate-galenos
 
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "GalenosAdminToken@123"
 
-MIGRATE_GALENOS_VERSION = "COSMETIC_AI_V1"
+MIGRATE_GALENOS_VERSION = "MSK_GEOMETRY_V1"
 
 
 def _auth(x_admin_token: str | None):
@@ -121,7 +121,7 @@ SQL_CLINICAL_NOTES = (
 )
 
 # =========================
-# MSK OVERLAY (geometría) — IA
+# MSK OVERLAY (GEOMETRÍA) — IA
 # =========================
 SQL_IMAGING_ALTER_MSK_OVERLAY_JSON = (
     "ALTER TABLE imaging "
@@ -232,7 +232,7 @@ def migrate_init(x_admin_token: str | None = Header(None)):
         return {
             "status": "ok",
             "version": MIGRATE_GALENOS_VERSION,
-            "message": "Migración aplicada: añade size_bytes a analytics/imaging para cuota de almacenamiento."
+            "message": "Migración aplicada: añade columnas MSK overlay geométrico (msk_overlay_json, msk_overlay_confidence) + columnas previas."
         }
 
     except Exception as e:
