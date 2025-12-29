@@ -431,7 +431,8 @@ def save_msk_overlay(
 
     overlay = payload.get("msk_overlay") if isinstance(payload, dict) else None
     if not isinstance(overlay, dict):
-        raise HTTPException(400, "Payload inválido. Esperado: {"msk_overlay": {...}}")
+        raise HTTPException(400, 'Payload inválido. Esperado: {"msk_overlay": {...}}')
+
 
     conf = float(overlay.get("confidence", 1.0) or 1.0)
 
