@@ -7,7 +7,7 @@ import json
 import io
 from PIL import Image
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Body
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy.orm import Session
 from openai import OpenAI
 
@@ -18,7 +18,6 @@ import storage_b2
 from utils_pdf import convert_pdf_to_images
 from utils_imagen import analyze_medical_image
 from prompts_imagen import SYSTEM_PROMPT_IMAGEN
-from utils_msk_geometry import analyze_msk_geometry, SYSTEM_PROMPT_MSK_GEOMETRY
 
 router = APIRouter(prefix="/imaging", tags=["Imaging"])
 
@@ -27,37 +26,38 @@ def _get_openai_client() -> OpenAI:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise HTTPException(500, "OPENAI_API_KEY no está configurada.")
-    return OpenAI(api_key=api_key)
-
-
-def _prepare_single_image_b64(file: UploadFile, content: bytes) -> str:
+    rdef _prepare_single_image_b64(file: UploadFile, content: bytes) -> str:
     ct = (file.content_type or "").lower()
     name = (file.filename or "").lower()
 
+    # PDF -> primera imagen
     if "pdf" in ct or name.endswith(".pdf"):
         imgs = convert_pdf_to_images(content, max_pages=10, dpi=200)
         if not imgs:
             raise HTTPException(400, "No se han podido extraer imágenes del PDF.")
         return imgs[0]
 
-if any(name.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".bmp", ".tiff"]):
-    return base64.b64encode(content).decode("utf-8")
+    # Imágenes estándar: devolver base64 tal cual
+    if any(name.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".bmp", ".tiff"]):
+        return base64.b64encode(content).decode("utf-8")
 
-# ✅ WEBP: convertir a PNG para compatibilidad (OpenAI + frontend)
-if name.endswith(".webp") or "webp" in ct:
-    try:
-        img = Image.open(io.BytesIO(content)).convert("RGB")
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return base64.b64encode(buf.getvalue()).decode("utf-8")
-    except Exception as e:
-        raise HTTPException(400, f"No se pudo convertir WEBP a PNG: {e}")
+    # ✅ WEBP: convertir a PNG para compatibilidad (OpenAI + frontend)
+    if name.endswith(".webp") or "webp" in ct:
+        try:
+            img = Image.open(io.BytesIO(content)).convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return base64.b64encode(buf.getvalue()).decode("utf-8")
+        except Exception as e:
+            raise HTTPException(400, f"No se pudo convertir WEBP a PNG: {e}")
 
+    # Fallback: intentar como PDF
     imgs = convert_pdf_to_images(content, max_pages=5, dpi=200)
     if imgs:
         return imgs[0]
 
     raise HTTPException(400, "Formato no soportado para imagen médica.")
+soportado para imagen médica.")
 
 
 def _parse_exam_date(exam_date: Optional[str]):
@@ -369,95 +369,3 @@ def list_imaging_by_patient(
         )
 
     return results
-
-
-
-# =============================
-# MSK OVERLAY (IA GEOMÉTRICA REAL)
-# =============================
-
-def _get_imaging_owned(db: Session, *, imaging_id: int, doctor_id: int):
-    q = text(
-        """
-        SELECT i.id, i.patient_id, i.type, i.summary, i.file_path
-        FROM imaging i
-        JOIN patients p ON p.id = i.patient_id
-        WHERE i.id = :iid AND p.doctor_id = :uid
-        """
-    )
-    r = db.execute(q, {"iid": imaging_id, "uid": doctor_id}).mappings().first()
-    return dict(r) if r else None
-
-
-@router.post("/msk-overlay/{imaging_id}")
-def generate_msk_overlay(
-    imaging_id: int,
-    db: Session = Depends(get_db),
-    current_user = Depends(get_current_user),
-):
-    row = _get_imaging_owned(db, imaging_id=imaging_id, doctor_id=current_user.id)
-    if not row:
-        raise HTTPException(404, "Imagen no encontrada o no pertenece al usuario.")
-
-    img_url = _file_path_for_front(
-        row.get("file_path"),
-        user_id=current_user.id,
-        record_id=row.get("id"),
-        kind="imaging",
-    )
-    if not img_url:
-        raise HTTPException(500, "No se ha podido generar URL de la imagen.")
-
-    client = _get_openai_client()
-    model = os.getenv("GALENOS_VISION_MODEL", "gpt-4o")
-
-    overlay = analyze_msk_geometry(
-        client=client,
-        image_url=img_url,
-        model=model,
-        system_prompt=SYSTEM_PROMPT_MSK_GEOMETRY,
-    )
-
-    conf = float((overlay or {}).get("confidence", 0.0) or 0.0)
-
-    try:
-        db.execute(
-            text("UPDATE imaging SET msk_overlay_json = CAST(:j AS jsonb), msk_overlay_confidence = :c WHERE id = :iid"),
-            {"j": json.dumps(overlay or {}), "c": conf, "iid": imaging_id},
-        )
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(500, f"Error guardando MSK overlay: {e}")
-
-    return {"imaging_id": imaging_id, "msk_overlay": overlay, "saved": True}
-
-
-@router.put("/msk-overlay/{imaging_id}")
-def save_msk_overlay(
-    imaging_id: int,
-    payload: Dict[str, Any] = Body(...),
-    db: Session = Depends(get_db),
-    current_user = Depends(get_current_user),
-):
-    row = _get_imaging_owned(db, imaging_id=imaging_id, doctor_id=current_user.id)
-    if not row:
-        raise HTTPException(404, "Imagen no encontrada o no pertenece al usuario.")
-
-    overlay = payload.get("msk_overlay") if isinstance(payload, dict) else None
-    if not isinstance(overlay, dict):
-        raise HTTPException(400, 'Payload inválido. Esperado: {"msk_overlay": {...}}')
-
-    conf = float(overlay.get("confidence", 1.0) or 1.0)
-
-    try:
-        db.execute(
-            text("UPDATE imaging SET msk_overlay_json = CAST(:j AS jsonb), msk_overlay_confidence = :c WHERE id = :iid"),
-            {"j": json.dumps(overlay), "c": conf, "iid": imaging_id},
-        )
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(500, f"Error guardando MSK overlay: {e}")
-
-    return {"ok": True, "imaging_id": imaging_id}
