@@ -4,10 +4,8 @@ import os
 import base64
 import hashlib
 import json
-import io
-from PIL import Image
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Body
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Body, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from openai import OpenAI
@@ -19,6 +17,8 @@ import storage_b2
 from utils_pdf import convert_pdf_to_images
 from utils_imagen import analyze_medical_image
 from prompts_imagen import SYSTEM_PROMPT_IMAGEN
+from ui_profiles import UIProfile
+from overlay_dispatcher import generate_overlay
 from utils_msk_geometry import analyze_msk_geometry, SYSTEM_PROMPT_MSK_GEOMETRY
 
 router = APIRouter(prefix="/imaging", tags=["Imaging"])
@@ -43,15 +43,6 @@ def _prepare_single_image_b64(file: UploadFile, content: bytes) -> str:
 
     if any(name.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".bmp", ".tiff"]):
         return base64.b64encode(content).decode("utf-8")
-
-    if name.endswith(".webp") or "webp" in ct:
-        try:
-            img = Image.open(io.BytesIO(content)).convert("RGB")
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            return base64.b64encode(buf.getvalue()).decode("utf-8")
-        except Exception as e:
-            raise HTTPException(400, f"No se pudo convertir WEBP a PNG: {e}")
 
     imgs = convert_pdf_to_images(content, max_pages=5, dpi=200)
     if imgs:
@@ -288,8 +279,6 @@ async def upload_imaging(
             preview_ext = "jpg"
         elif lower_name.endswith(".png"):
             preview_ext = "png"
-        elif lower_name.endswith(".webp"):
-            preview_ext = "png"  # webp convertido a png
 
         up = _b2_upload_original_and_preview(
             user_id=current_user.id,
@@ -461,3 +450,67 @@ def save_msk_overlay(
         raise HTTPException(500, f"Error guardando MSK overlay: {e}")
 
     return {"ok": True, "imaging_id": imaging_id}
+
+
+
+# =============================
+# OVERLAY DISPATCHER (MULTIPERFIL)
+# =============================
+
+@router.post("/overlay/{imaging_id}")
+def generate_overlay_any(
+    imaging_id: int,
+    payload: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    """Endpoint unificado para overlays por perfil."""
+
+    profile_raw = (payload or {}).get("profile")
+    profile = UIProfile.MSK
+    if isinstance(profile_raw, str) and profile_raw.strip():
+        try:
+            profile = UIProfile(profile_raw.strip().upper())
+        except Exception:
+            raise HTTPException(400, f"Perfil inválido: {profile_raw}")
+
+    # Ownership (misma lógica que MSK)
+    q = text(
+        """
+        SELECT i.id, i.patient_id, i.type, i.summary, i.file_path
+        FROM imaging i
+        JOIN patients p ON p.id = i.patient_id
+        WHERE i.id = :iid AND p.doctor_id = :uid
+        """
+    )
+    r = db.execute(q, {"iid": imaging_id, "uid": current_user.id}).mappings().first()
+    row = dict(r) if r else None
+    if not row:
+        raise HTTPException(404, "Imagen no encontrada o no pertenece al usuario.")
+
+    img_url = _file_path_for_front(row.get("file_path"), user_id=current_user.id, record_id=row.get("id"), kind="imaging")
+    if not img_url:
+        raise HTTPException(500, "No se ha podido generar URL de la imagen.")
+
+    client = _get_openai_client()
+    model = os.getenv("GALENOS_VISION_MODEL", "gpt-4o")
+
+    try:
+        overlay = generate_overlay(profile=profile, client=client, image_url=img_url, model=model)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Error generando overlay {profile}: {e}")
+
+    conf = float((overlay or {}).get("confidence", 0.0) or 0.0)
+    try:
+        db.execute(
+            text("UPDATE imaging SET msk_overlay_json = CAST(:j AS jsonb), msk_overlay_confidence = :c WHERE id = :iid"),
+            {"j": json.dumps(overlay or {}), "c": conf, "iid": imaging_id},
+        )
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, f"Error guardando overlay: {e}")
+
+    return {"imaging_id": imaging_id, "profile": profile, "overlay": overlay, "saved": True}
