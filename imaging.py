@@ -7,6 +7,7 @@ import json
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Body
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from openai import OpenAI
 
 from auth import get_current_user
