@@ -5,7 +5,7 @@ import base64
 import hashlib
 import json
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Body
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy.orm import Session
 from openai import OpenAI
 
@@ -16,7 +16,6 @@ import storage_b2
 from utils_pdf import convert_pdf_to_images
 from utils_imagen import analyze_medical_image
 from prompts_imagen import SYSTEM_PROMPT_IMAGEN
-from utils_msk_geometry import analyze_msk_geometry, SYSTEM_PROMPT_MSK_GEOMETRY
 
 router = APIRouter(prefix="/imaging", tags=["Imaging"])
 
@@ -355,95 +354,3 @@ def list_imaging_by_patient(
         )
 
     return results
-
-
-
-# =============================
-# MSK OVERLAY (IA GEOMÉTRICA REAL)
-# =============================
-
-def _get_imaging_owned(db: Session, *, imaging_id: int, doctor_id: int):
-    """Devuelve row dict si la imagen pertenece al doctor (via patients.doctor_id)."""
-    q = text(
-        """
-        SELECT i.id, i.patient_id, i.type, i.summary, i.file_path
-        FROM imaging i
-        JOIN patients p ON p.id = i.patient_id
-        WHERE i.id = :iid AND p.doctor_id = :uid
-        """
-    )
-    r = db.execute(q, {"iid": imaging_id, "uid": doctor_id}).mappings().first()
-    return dict(r) if r else None
-
-
-@router.post("/msk-overlay/{imaging_id}")
-def generate_msk_overlay(
-    imaging_id: int,
-    db: Session = Depends(get_db),
-    current_user = Depends(get_current_user),
-):
-    """Auto REAL: IA devuelve geometría (roi + fascia_y + confidence) y se guarda en BD."""
-    row = _get_imaging_owned(db, imaging_id=imaging_id, doctor_id=current_user.id)
-    if not row:
-        raise HTTPException(404, "Imagen no encontrada o no pertenece al usuario.")
-
-    # URL presignada del preview (válida 1h)
-    img_url = _file_path_for_front(row.get("file_path"), user_id=current_user.id, record_id=row.get("id"), kind="imaging")
-    if not img_url:
-        raise HTTPException(500, "No se ha podido generar URL de la imagen (storage).")
-
-    client = _get_openai_client()
-    model = os.getenv("GALENOS_VISION_MODEL", "gpt-4o")
-
-    overlay = analyze_msk_geometry(
-        client=client,
-        image_url=img_url,
-        model=model,
-        system_prompt=SYSTEM_PROMPT_MSK_GEOMETRY,
-    )
-
-    conf = float((overlay or {}).get("confidence", 0.0) or 0.0)
-
-    try:
-        db.execute(
-            text("UPDATE imaging SET msk_overlay_json = :j, msk_overlay_confidence = :c WHERE id = :iid"),
-            {"j": json.dumps(overlay or {}), "c": conf, "iid": imaging_id},
-        )
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(500, f"Error guardando MSK overlay: {e}")
-
-    return {"imaging_id": imaging_id, "msk_overlay": overlay, "saved": True}
-
-
-@router.put("/msk-overlay/{imaging_id}")
-def save_msk_overlay(
-    imaging_id: int,
-    payload: Dict[str, Any] = Body(...),
-    db: Session = Depends(get_db),
-    current_user = Depends(get_current_user),
-):
-    """Fallback B: guarda ajuste manual (o corrección) del overlay en BD."""
-    row = _get_imaging_owned(db, imaging_id=imaging_id, doctor_id=current_user.id)
-    if not row:
-        raise HTTPException(404, "Imagen no encontrada o no pertenece al usuario.")
-
-    overlay = payload.get("msk_overlay") if isinstance(payload, dict) else None
-    if not isinstance(overlay, dict):
-        raise HTTPException(400, 'Payload inválido. Esperado: {"msk_overlay": {...}}')
-
-
-    conf = float(overlay.get("confidence", 1.0) or 1.0)
-
-    try:
-        db.execute(
-            text("UPDATE imaging SET msk_overlay_json = :j, msk_overlay_confidence = :c WHERE id = :iid"),
-            {"j": json.dumps(overlay), "c": conf, "iid": imaging_id},
-        )
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(500, f"Error guardando MSK overlay: {e}")
-
-    return {"ok": True, "imaging_id": imaging_id}
