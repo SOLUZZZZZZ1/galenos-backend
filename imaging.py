@@ -26,22 +26,22 @@ def _get_openai_client() -> OpenAI:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise HTTPException(500, "OPENAI_API_KEY no está configurada.")
-    rdef _prepare_single_image_b64(file: UploadFile, content: bytes) -> str:
+    return OpenAI(api_key=api_key)
+
+
+def _prepare_single_image_b64(file: UploadFile, content: bytes) -> str:
     ct = (file.content_type or "").lower()
     name = (file.filename or "").lower()
 
-    # PDF -> primera imagen
     if "pdf" in ct or name.endswith(".pdf"):
         imgs = convert_pdf_to_images(content, max_pages=10, dpi=200)
         if not imgs:
             raise HTTPException(400, "No se han podido extraer imágenes del PDF.")
         return imgs[0]
 
-    # Imágenes estándar: devolver base64 tal cual
     if any(name.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".bmp", ".tiff"]):
         return base64.b64encode(content).decode("utf-8")
 
-    # ✅ WEBP: convertir a PNG para compatibilidad (OpenAI + frontend)
     if name.endswith(".webp") or "webp" in ct:
         try:
             img = Image.open(io.BytesIO(content)).convert("RGB")
@@ -51,13 +51,12 @@ def _get_openai_client() -> OpenAI:
         except Exception as e:
             raise HTTPException(400, f"No se pudo convertir WEBP a PNG: {e}")
 
-    # Fallback: intentar como PDF
     imgs = convert_pdf_to_images(content, max_pages=5, dpi=200)
     if imgs:
         return imgs[0]
 
     raise HTTPException(400, "Formato no soportado para imagen médica.")
-soportado para imagen médica.")
+
 
 
 def _parse_exam_date(exam_date: Optional[str]):
