@@ -4,8 +4,10 @@ import os
 import base64
 import hashlib
 import json
+import io
+from PIL import Image
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Body, Body
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from openai import OpenAI
@@ -44,11 +46,21 @@ def _prepare_single_image_b64(file: UploadFile, content: bytes) -> str:
     if any(name.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".bmp", ".tiff"]):
         return base64.b64encode(content).decode("utf-8")
 
+    if name.endswith(".webp") or "webp" in ct:
+        try:
+            img = Image.open(io.BytesIO(content)).convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return base64.b64encode(buf.getvalue()).decode("utf-8")
+        except Exception as e:
+            raise HTTPException(400, f"No se pudo convertir WEBP a PNG: {e}")
+
     imgs = convert_pdf_to_images(content, max_pages=5, dpi=200)
     if imgs:
         return imgs[0]
 
     raise HTTPException(400, "Formato no soportado para imagen médica.")
+
 
 
 def _parse_exam_date(exam_date: Optional[str]):
@@ -279,6 +291,8 @@ async def upload_imaging(
             preview_ext = "jpg"
         elif lower_name.endswith(".png"):
             preview_ext = "png"
+        elif lower_name.endswith(".webp"):
+            preview_ext = "png"  # webp convertido a png
 
         up = _b2_upload_original_and_preview(
             user_id=current_user.id,
