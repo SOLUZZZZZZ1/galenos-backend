@@ -62,7 +62,6 @@ def _prepare_single_image_b64(file: UploadFile, content: bytes) -> str:
     raise HTTPException(400, "Formato no soportado para imagen médica.")
 
 
-
 def _parse_exam_date(exam_date: Optional[str]):
     if not exam_date:
         return None
@@ -70,7 +69,6 @@ def _parse_exam_date(exam_date: Optional[str]):
         return datetime.strptime(exam_date, "%Y-%m-%d").date()
     except:
         return None
-
 
 
 # =============================
@@ -102,7 +100,7 @@ def _classify_ui_family_from_image(client: OpenAI, *, image_b64: str) -> dict:
         data = json.loads(raw_str)
         fam = str(data.get("family", "OTHER")).upper().strip()
         conf = float(data.get("confidence", 0) or 0)
-        if fam not in ["MSK","VASCULAR","CARDIAC","ABDOMEN","LUNG","OTHER"]:
+        if fam not in ["MSK", "VASCULAR", "CARDIAC", "ABDOMEN", "LUNG", "OTHER"]:
             fam = "OTHER"
         conf = 0.0 if conf < 0 else (1.0 if conf > 1 else conf)
         return {"family": fam, "confidence": conf}
@@ -119,6 +117,7 @@ def _ext_from_filename(name: str) -> str:
     if "." in name:
         return name.rsplit(".", 1)[-1]
     return "bin"
+
 
 def _b2_upload_original_and_preview(*, user_id: int, kind: str, record_id: int, original_filename: str, original_bytes: bytes, preview_b64: str, preview_ext: str = "png"):
     import base64
@@ -231,7 +230,7 @@ async def upload_imaging(
     exam_date: Optional[str] = Form(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user),
+    current_user=Depends(get_current_user),
 ):
     patient = crud.get_patient_by_id(db, patient_id, current_user.id)
     if not patient:
@@ -326,11 +325,12 @@ async def upload_imaging(
         "ui_confidence": ui_confidence,
     }
 
+
 @router.get("/by-patient/{patient_id}")
 def list_imaging_by_patient(
     patient_id: int,
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user),
+    current_user=Depends(get_current_user),
 ):
     patient = crud.get_patient_by_id(db, patient_id, current_user.id)
     if not patient:
@@ -374,11 +374,9 @@ def list_imaging_by_patient(
     return results
 
 
-
 # =============================
 # MSK OVERLAY (IA GEOMÉTRICA REAL)
 # =============================
-
 def _get_imaging_owned(db: Session, *, imaging_id: int, doctor_id: int):
     q = text(
         """
@@ -396,7 +394,7 @@ def _get_imaging_owned(db: Session, *, imaging_id: int, doctor_id: int):
 def generate_msk_overlay(
     imaging_id: int,
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user),
+    current_user=Depends(get_current_user),
 ):
     row = _get_imaging_owned(db, imaging_id=imaging_id, doctor_id=current_user.id)
     if not row:
@@ -441,7 +439,7 @@ def save_msk_overlay(
     imaging_id: int,
     payload: Dict[str, Any] = Body(...),
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user),
+    current_user=Depends(get_current_user),
 ):
     row = _get_imaging_owned(db, imaging_id=imaging_id, doctor_id=current_user.id)
     if not row:
@@ -466,17 +464,38 @@ def save_msk_overlay(
     return {"ok": True, "imaging_id": imaging_id}
 
 
-
 # =============================
 # OVERLAY DISPATCHER (MULTIPERFIL)
 # =============================
+
+def _overlay_update_sql_for_profile(profile: UIProfile) -> str:
+    """
+    Devuelve SQL + nombres de campos correctos según perfil.
+    NO rompe MSK.
+    """
+    if profile == UIProfile.VASCULAR:
+        return (
+            "UPDATE imaging "
+            "SET vascular_overlay_json = CAST(:j AS jsonb), "
+            "vascular_overlay_confidence = :c "
+            "WHERE id = :iid"
+        )
+
+    # Default: MSK
+    return (
+        "UPDATE imaging "
+        "SET msk_overlay_json = CAST(:j AS jsonb), "
+        "msk_overlay_confidence = :c "
+        "WHERE id = :iid"
+    )
+
 
 @router.post("/overlay/{imaging_id}")
 def generate_overlay_any(
     imaging_id: int,
     payload: dict = Body(default={}),
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user),
+    current_user=Depends(get_current_user),
 ):
     """Endpoint unificado para overlays por perfil."""
 
@@ -484,6 +503,7 @@ def generate_overlay_any(
     profile = UIProfile.MSK
     if isinstance(profile_raw, str) and profile_raw.strip():
         try:
+            # Nota: tu UIProfile en backend está en UPPER ("MSK","VASCULAR"...)
             profile = UIProfile(profile_raw.strip().upper())
         except Exception:
             raise HTTPException(400, f"Perfil inválido: {profile_raw}")
@@ -518,8 +538,9 @@ def generate_overlay_any(
 
     conf = float((overlay or {}).get("confidence", 0.0) or 0.0)
     try:
+        sql = _overlay_update_sql_for_profile(profile)
         db.execute(
-            text("UPDATE imaging SET msk_overlay_json = CAST(:j AS jsonb), msk_overlay_confidence = :c WHERE id = :iid"),
+            text(sql),
             {"j": json.dumps(overlay or {}), "c": conf, "iid": imaging_id},
         )
         db.commit()
@@ -527,4 +548,4 @@ def generate_overlay_any(
         db.rollback()
         raise HTTPException(500, f"Error guardando overlay: {e}")
 
-    return {"imaging_id": imaging_id, "profile": profile, "overlay": overlay, "saved": True}
+    return {"imaging_id": imaging_id, "profile": str(profile), "overlay": overlay, "saved": True}
