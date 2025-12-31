@@ -7,7 +7,8 @@ router = APIRouter(prefix="/admin/migrate-galenos", tags=["admin-migrate-galenos
 
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "GalenosAdminToken@123"
 
-MIGRATE_GALENOS_VERSION = "MSK_GEOMETRY_V1"
+# ✅ Versión actualizada (incluye VASCULAR)
+MIGRATE_GALENOS_VERSION = "MSK_GEOMETRY_V1 + VASCULAR_GEOMETRY_V1"
 
 
 def _auth(x_admin_token: str | None):
@@ -88,7 +89,6 @@ SQL_IMAGING = (
     ");"
 )
 
-
 SQL_ANALYTICS_ALTER_SIZE_BYTES = (
     "ALTER TABLE analytics "
     "ADD COLUMN IF NOT EXISTS size_bytes BIGINT DEFAULT 0;"
@@ -99,7 +99,6 @@ SQL_IMAGING_ALTER_SIZE_BYTES = (
     "ADD COLUMN IF NOT EXISTS size_bytes BIGINT DEFAULT 0;"
 )
 
-
 SQL_IMAGING_ALTER_AI_DESCRIPTION = (
     "ALTER TABLE imaging "
     "ADD COLUMN IF NOT EXISTS ai_description_draft TEXT;"
@@ -109,6 +108,7 @@ SQL_IMAGING_ALTER_AI_DESCRIPTION_TS = (
     "ALTER TABLE imaging "
     "ADD COLUMN IF NOT EXISTS ai_description_updated_at TIMESTAMP NULL;"
 )
+
 SQL_CLINICAL_NOTES = (
     "CREATE TABLE IF NOT EXISTS clinical_notes ("
     "id SERIAL PRIMARY KEY,"
@@ -130,110 +130,4 @@ SQL_IMAGING_ALTER_MSK_OVERLAY_JSON = (
 
 SQL_IMAGING_ALTER_MSK_OVERLAY_CONFIDENCE = (
     "ALTER TABLE imaging "
-    "ADD COLUMN IF NOT EXISTS msk_overlay_confidence FLOAT DEFAULT 0;"
-)
-
-SQL_TIMELINE_ITEMS = (
-    "CREATE TABLE IF NOT EXISTS timeline_items ("
-    "id SERIAL PRIMARY KEY,"
-    "patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,"
-    "item_type TEXT NOT NULL,"
-    "item_id INTEGER NOT NULL,"
-    "created_at TIMESTAMP DEFAULT NOW()"
-    ");"
-)
-
-# =========================
-# GUARDIA (COMPARTIDA)
-# =========================
-
-SQL_GUARD_CASES = (
-    "CREATE TABLE IF NOT EXISTS guard_cases ("
-    "id SERIAL PRIMARY KEY,"
-    "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
-    "title TEXT,"
-    "age_group TEXT,"
-    "sex TEXT,"
-    "context TEXT,"
-    "anonymized_summary TEXT,"
-    "status TEXT DEFAULT 'open',"
-    "patient_ref_id INTEGER,"
-    "created_at TIMESTAMP DEFAULT NOW(),"
-    "last_activity_at TIMESTAMP DEFAULT NOW(),"
-    "visibility TEXT DEFAULT 'public'"
-    ");"
-)
-
-SQL_GUARD_CASES_ALTER_VISIBILITY = (
-    "ALTER TABLE guard_cases "
-    "ADD COLUMN IF NOT EXISTS visibility TEXT DEFAULT 'public';"
-)
-
-SQL_GUARD_MESSAGES = (
-    "CREATE TABLE IF NOT EXISTS guard_messages ("
-    "id SERIAL PRIMARY KEY,"
-    "case_id INTEGER NOT NULL REFERENCES guard_cases(id) ON DELETE CASCADE,"
-    "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
-    "author_alias TEXT,"
-    "raw_content TEXT,"
-    "clean_content TEXT,"
-    "moderation_status TEXT,"
-    "moderation_reason TEXT,"
-    "created_at TIMESTAMP DEFAULT NOW()"
-    ");"
-)
-
-SQL_GUARD_FAVORITES = (
-    "CREATE TABLE IF NOT EXISTS guard_favorites ("
-    "id SERIAL PRIMARY KEY,"
-    "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
-    "case_id INTEGER NOT NULL REFERENCES guard_cases(id) ON DELETE CASCADE,"
-    "created_at TIMESTAMP DEFAULT NOW()"
-    ");"
-)
-
-SQL_GUARD_MESSAGE_ATTACHMENTS = (
-    "CREATE TABLE IF NOT EXISTS guard_message_attachments ("
-    "id SERIAL PRIMARY KEY,"
-    "message_id INTEGER NOT NULL REFERENCES guard_messages(id) ON DELETE CASCADE,"
-    "kind TEXT NOT NULL CHECK (kind IN ('analytic','imaging')),"
-    "ref_id INTEGER NOT NULL"
-    ");"
-)
-
-
-@router.post("/init")
-def migrate_init(x_admin_token: str | None = Header(None)):
-    _auth(x_admin_token)
-
-    try:
-        with engine.begin() as conn:
-            conn.execute(text(SQL_USERS))
-            conn.execute(text(SQL_DOCTOR_PROFILES))
-            conn.execute(text(SQL_PATIENTS))
-
-            conn.execute(text(SQL_ANALYTICS))
-            conn.execute(text(SQL_IMAGING))
-            conn.execute(text(SQL_ANALYTICS_ALTER_SIZE_BYTES))
-            conn.execute(text(SQL_IMAGING_ALTER_SIZE_BYTES))
-            conn.execute(text(SQL_IMAGING_ALTER_AI_DESCRIPTION))
-            conn.execute(text(SQL_IMAGING_ALTER_AI_DESCRIPTION_TS))
-            conn.execute(text(SQL_IMAGING_ALTER_MSK_OVERLAY_JSON))
-            conn.execute(text(SQL_IMAGING_ALTER_MSK_OVERLAY_CONFIDENCE))
-            conn.execute(text(SQL_CLINICAL_NOTES))
-            conn.execute(text(SQL_TIMELINE_ITEMS))
-
-            conn.execute(text(SQL_GUARD_CASES))
-            conn.execute(text(SQL_GUARD_CASES_ALTER_VISIBILITY))
-            conn.execute(text(SQL_GUARD_MESSAGES))
-            conn.execute(text(SQL_GUARD_FAVORITES))
-            conn.execute(text(SQL_GUARD_MESSAGE_ATTACHMENTS))
-
-        return {
-            "status": "ok",
-            "version": MIGRATE_GALENOS_VERSION,
-            "message": "Migración aplicada: añade columnas MSK overlay geométrico (msk_overlay_json, msk_overlay_confidence) + columnas previas."
-        }
-
-    except Exception as e:
-        raise HTTPException(500, f"Error en migración: {e}")
+    "ADD C
