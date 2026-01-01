@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, BigInteger, String, Float, ForeignKey, DateTime, Text, Date
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from database import Base
@@ -175,6 +176,10 @@ class Imaging(Base):
     size_bytes = Column(BigInteger, default=0)
     exam_date = Column(Date)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    # ROI clínico (región analizada) — JSON normalizado 0..1
+    roi_json = Column(JSONB, nullable=True)
+    roi_version = Column(String, nullable=True)
 
     patient = relationship("Patient", back_populates="imaging")
     patterns = relationship("ImagingPattern", back_populates="imaging", cascade="all, delete")

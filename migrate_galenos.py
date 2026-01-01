@@ -8,7 +8,7 @@ router = APIRouter(prefix="/admin/migrate-galenos", tags=["admin-migrate-galenos
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "GalenosAdminToken@123"
 
 # ✅ Versión actualizada (incluye VASCULAR)
-MIGRATE_GALENOS_VERSION = "MSK_GEOMETRY_V1 + VASCULAR_GEOMETRY_V1"
+MIGRATE_GALENOS_VERSION = "MSK_GEOMETRY_V1 + VASCULAR_GEOMETRY_V1 + ROI_V1"
 
 
 def _auth(x_admin_token: str | None):
@@ -146,6 +146,19 @@ ALTER TABLE imaging
 ADD COLUMN IF NOT EXISTS vascular_overlay_confidence FLOAT DEFAULT 0;
 """
 
+# =========================
+# ✅ ROI (REGIÓN CLÍNICA) — determinista
+# =========================
+SQL_IMAGING_ALTER_ROI_JSON = """
+ALTER TABLE imaging
+ADD COLUMN IF NOT EXISTS roi_json JSONB;
+"""
+
+SQL_IMAGING_ALTER_ROI_VERSION = """
+ALTER TABLE imaging
+ADD COLUMN IF NOT EXISTS roi_version TEXT;
+"""
+
 SQL_TIMELINE_ITEMS = """
 CREATE TABLE IF NOT EXISTS timeline_items (
   id SERIAL PRIMARY KEY,
@@ -239,6 +252,10 @@ def migrate_init(x_admin_token: str | None = Header(None)):
             # ✅ VASCULAR
             conn.execute(text(SQL_IMAGING_ALTER_VASCULAR_OVERLAY_JSON))
             conn.execute(text(SQL_IMAGING_ALTER_VASCULAR_OVERLAY_CONFIDENCE))
+
+            # ✅ ROI
+            conn.execute(text(SQL_IMAGING_ALTER_ROI_JSON))
+            conn.execute(text(SQL_IMAGING_ALTER_ROI_VERSION))
 
             conn.execute(text(SQL_CLINICAL_NOTES))
             conn.execute(text(SQL_TIMELINE_ITEMS))

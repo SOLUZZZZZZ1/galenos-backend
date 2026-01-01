@@ -120,6 +120,7 @@ class ImagingReturn(BaseModel):
     exam_date: Optional[date] = None
     patterns: List[ImagingPatternReturn]
     file_path: Optional[str] = None  # miniatura (data URL PNG) para la imagen
+    roi_json: Optional[dict] = None  # ROI clínico (debug/uso interno)
 
     class Config:
         from_attributes = True

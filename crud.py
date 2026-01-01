@@ -482,3 +482,18 @@ def get_storage_quota_status(db: Session, user_id: int) -> dict:
         "hard_exceeded": used > HARD_LIMIT_BYTES,
     }
 
+
+
+# ===============================================
+# ROI (Región clínica analizada) — Imaging
+# ===============================================
+def set_imaging_roi(db: Session, imaging_id: int, roi: dict | None, version: str = "ROI_V1"):
+    """Guarda ROI en Imaging para limpiar overlays y análisis futuros."""
+    imaging = db.query(Imaging).filter(Imaging.id == imaging_id).first()
+    if not imaging:
+        return None
+    imaging.roi_json = roi
+    imaging.roi_version = version
+    db.commit()
+    db.refresh(imaging)
+    return imaging

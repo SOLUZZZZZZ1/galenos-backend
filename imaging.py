@@ -18,6 +18,7 @@ import crud
 import storage_b2
 from utils_pdf import convert_pdf_to_images
 from utils_imagen import analyze_medical_image
+from utils_roi import detect_roi_from_b64
 from prompts_imagen import SYSTEM_PROMPT_IMAGEN
 from ui_profiles import UIProfile
 from overlay_dispatcher import generate_overlay
@@ -251,6 +252,7 @@ async def upload_imaging(
         return _build_duplicate_response(existing, user_id=current_user.id)
 
     img_b64 = _prepare_single_image_b64(file, content)
+    roi = detect_roi_from_b64(img_b64)
     client = _get_openai_client()
     model = os.getenv("GALENOS_VISION_MODEL", "gpt-4o")
 
@@ -281,6 +283,12 @@ async def upload_imaging(
         file_hash=file_hash,
         exam_date=exam_date_value,
     )
+
+    # ✅ Guardar ROI (región clínica) — invisible por defecto
+    try:
+        crud.set_imaging_roi(db, imaging.id, roi, version="ROI_V1")
+    except Exception as e:
+        print("[ROI] Error guardando ROI:", repr(e))
 
     # ✅ Subimos binarios a Backblaze B2 (original + preview) y guardamos SOLO la clave del preview
     try:
@@ -323,6 +331,7 @@ async def upload_imaging(
         "duplicate": False,
         "ui_family": ui_family,
         "ui_confidence": ui_confidence,
+        "roi_json": roi,
     }
 
 
@@ -368,6 +377,7 @@ def list_imaging_by_patient(
                 "exam_date": img.exam_date,
                 "patterns": patterns_list,
                 "file_path": _file_path_for_front(img.file_path, user_id=current_user.id, record_id=img.id, kind="imaging"),
+                "roi_json": getattr(img, "roi_json", None),
             }
         )
 
