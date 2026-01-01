@@ -25,3 +25,5 @@ httptools
 cryptography
 feedparser
 boto3
+numpy>=1.26,<2.0
+
