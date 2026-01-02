@@ -18,7 +18,6 @@ import crud
 import storage_b2
 from utils_pdf import convert_pdf_to_images
 from utils_imagen import analyze_medical_image
-from utils_roi import detect_roi_from_b64
 from prompts_imagen import SYSTEM_PROMPT_IMAGEN
 from ui_profiles import UIProfile
 from overlay_dispatcher import generate_overlay
@@ -252,7 +251,6 @@ async def upload_imaging(
         return _build_duplicate_response(existing, user_id=current_user.id)
 
     img_b64 = _prepare_single_image_b64(file, content)
-    roi = detect_roi_from_b64(img_b64)
     client = _get_openai_client()
     model = os.getenv("GALENOS_VISION_MODEL", "gpt-4o")
 
@@ -283,12 +281,6 @@ async def upload_imaging(
         file_hash=file_hash,
         exam_date=exam_date_value,
     )
-
-    # ✅ Guardar ROI (región clínica) — invisible por defecto
-    try:
-        crud.set_imaging_roi(db, imaging.id, roi, version="ROI_V1")
-    except Exception as e:
-        print("[ROI] Error guardando ROI:", repr(e))
 
     # ✅ Subimos binarios a Backblaze B2 (original + preview) y guardamos SOLO la clave del preview
     try:
@@ -331,7 +323,6 @@ async def upload_imaging(
         "duplicate": False,
         "ui_family": ui_family,
         "ui_confidence": ui_confidence,
-        "roi_json": roi,
     }
 
 
@@ -377,7 +368,6 @@ def list_imaging_by_patient(
                 "exam_date": img.exam_date,
                 "patterns": patterns_list,
                 "file_path": _file_path_for_front(img.file_path, user_id=current_user.id, record_id=img.id, kind="imaging"),
-                "roi_json": getattr(img, "roi_json", None),
             }
         )
 
@@ -390,7 +380,7 @@ def list_imaging_by_patient(
 def _get_imaging_owned(db: Session, *, imaging_id: int, doctor_id: int):
     q = text(
         """
-        SELECT i.id, i.patient_id, i.type, i.summary, i.file_path
+        SELECT i.id, i.patient_id, i.type, i.summary, i.file_path, i.roi_json
         FROM imaging i
         JOIN patients p ON p.id = i.patient_id
         WHERE i.id = :iid AND p.doctor_id = :uid
@@ -422,12 +412,7 @@ def generate_msk_overlay(
     client = _get_openai_client()
     model = os.getenv("GALENOS_VISION_MODEL", "gpt-4o")
 
-    overlay = analyze_msk_geometry(
-        client=client,
-        image_url=img_url,
-        model=model,
-        system_prompt=SYSTEM_PROMPT_MSK_GEOMETRY,
-    )
+    overlay = generate_overlay(profile=UIProfile.MSK, client=client, image_url=img_url, model=model, roi=row.get("roi_json"))
 
     conf = float((overlay or {}).get("confidence", 0.0) or 0.0)
 
@@ -521,7 +506,7 @@ def generate_overlay_any(
     # Ownership (misma lógica que MSK)
     q = text(
         """
-        SELECT i.id, i.patient_id, i.type, i.summary, i.file_path
+        SELECT i.id, i.patient_id, i.type, i.summary, i.file_path, i.roi_json
         FROM imaging i
         JOIN patients p ON p.id = i.patient_id
         WHERE i.id = :iid AND p.doctor_id = :uid
@@ -540,7 +525,7 @@ def generate_overlay_any(
     model = os.getenv("GALENOS_VISION_MODEL", "gpt-4o")
 
     try:
-        overlay = generate_overlay(profile=profile, client=client, image_url=img_url, model=model)
+        overlay = generate_overlay(profile=profile, client=client, image_url=img_url, model=model, roi=row.get("roi_json"))
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
