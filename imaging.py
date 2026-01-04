@@ -6,7 +6,6 @@ import hashlib
 import json
 import io
 from PIL import Image
-from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Body
 from sqlalchemy.orm import Session
@@ -25,11 +24,6 @@ from overlay_dispatcher import generate_overlay
 from utils_msk_geometry import analyze_msk_geometry, SYSTEM_PROMPT_MSK_GEOMETRY
 
 router = APIRouter(prefix="/imaging", tags=["Imaging"])
-
-class VascularV2OracleRequest(BaseModel):
-    context: Optional[str] = None
-
-
 
 
 def _get_openai_client() -> OpenAI:
@@ -386,7 +380,7 @@ def list_imaging_by_patient(
 def _get_imaging_owned(db: Session, *, imaging_id: int, doctor_id: int):
     q = text(
         """
-        SELECT i.id, i.patient_id, i.type, i.summary, i.file_path, i.roi_json
+        SELECT i.id, i.patient_id, i.type, i.summary, i.file_path
         FROM imaging i
         JOIN patients p ON p.id = i.patient_id
         WHERE i.id = :iid AND p.doctor_id = :uid
@@ -418,7 +412,12 @@ def generate_msk_overlay(
     client = _get_openai_client()
     model = os.getenv("GALENOS_VISION_MODEL", "gpt-4o")
 
-    overlay = generate_overlay(profile=UIProfile.MSK, client=client, image_url=img_url, model=model, roi=row.get("roi_json"))
+    overlay = analyze_msk_geometry(
+        client=client,
+        image_url=img_url,
+        model=model,
+        system_prompt=SYSTEM_PROMPT_MSK_GEOMETRY,
+    )
 
     conf = float((overlay or {}).get("confidence", 0.0) or 0.0)
 
@@ -512,7 +511,7 @@ def generate_overlay_any(
     # Ownership (misma lógica que MSK)
     q = text(
         """
-        SELECT i.id, i.patient_id, i.type, i.summary, i.file_path, i.roi_json
+        SELECT i.id, i.patient_id, i.type, i.summary, i.file_path
         FROM imaging i
         JOIN patients p ON p.id = i.patient_id
         WHERE i.id = :iid AND p.doctor_id = :uid
@@ -531,7 +530,7 @@ def generate_overlay_any(
     model = os.getenv("GALENOS_VISION_MODEL", "gpt-4o")
 
     try:
-        overlay = generate_overlay(profile=profile, client=client, image_url=img_url, model=model, roi=row.get("roi_json"))
+        overlay = generate_overlay(profile=profile, client=client, image_url=img_url, model=model)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
@@ -550,99 +549,3 @@ def generate_overlay_any(
         raise HTTPException(500, f"Error guardando overlay: {e}")
 
     return {"imaging_id": imaging_id, "profile": str(profile), "overlay": overlay, "saved": True}
-
-
-@router.post("/vascular-v2/{imaging_id}")
-def vascular_v2_analyze(
-    imaging_id: int,
-    payload: dict = Body(default={}),
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    """Vascular V2: hechos + patrones (base) + disponibilidad de oráculo."""
-    row = _get_imaging_owned(db, imaging_id=imaging_id, doctor_id=current_user.id)
-    if not row:
-        raise HTTPException(404, "Imagen no encontrada o no pertenece al usuario.")
-
-    img_url = _file_path_for_front(row.get("file_path"), user_id=current_user.id, record_id=row.get("id"), kind="imaging")
-    if not img_url:
-        raise HTTPException(500, "No se ha podido generar URL de la imagen.")
-
-    client = _get_openai_client()
-    model = os.getenv("GALENOS_VISION_MODEL", "gpt-4o")
-
-    roi = normalize_roi(row.get("roi_json"))
-    image_url_for_ai = img_url
-    roi_used = None
-    if roi:
-        try:
-            img_full = image_url_to_pil(img_url)
-            img_crop = crop_pil_to_roi(img_full, roi)
-            image_url_for_ai = pil_to_data_url_png(img_crop)
-            roi_used = roi
-        except Exception:
-            roi_used = None
-            image_url_for_ai = img_url
-
-    extra_context = None
-    if isinstance(payload, dict):
-        extra_context = payload.get("context") or None
-
-    signals = analyze_vascular_v2_signals(client=client, image_url=image_url_for_ai, model=model, extra_context=extra_context)
-    base = build_vascular_v2_base(signals)
-
-    vascular_overlay = None
-    try:
-        geom = analyze_vascular_geometry(client=client, image_url=image_url_for_ai, model=model, system_prompt=SYSTEM_PROMPT_VASCULAR_GEOMETRY)
-        if roi_used:
-            geom = remap_overlay_vascular(geom, roi_used)
-        vascular_overlay = geom
-    except Exception:
-        vascular_overlay = None
-
-    return {
-        "imaging_id": imaging_id,
-        "base": base,
-        "signals": signals,
-        "oracle_available": bool(base.get("oracle_available")),
-        "visual": {"vascular_overlay": vascular_overlay},
-    }
-
-
-@router.post("/vascular-v2/{imaging_id}/oracle")
-def vascular_v2_oracle(
-    imaging_id: int,
-    req: VascularV2OracleRequest,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    """Vascular V2: oráculo bajo demanda (escenarios generales)."""
-    row = _get_imaging_owned(db, imaging_id=imaging_id, doctor_id=current_user.id)
-    if not row:
-        raise HTTPException(404, "Imagen no encontrada o no pertenece al usuario.")
-
-    img_url = _file_path_for_front(row.get("file_path"), user_id=current_user.id, record_id=row.get("id"), kind="imaging")
-    if not img_url:
-        raise HTTPException(500, "No se ha podido generar URL de la imagen.")
-
-    client = _get_openai_client()
-    model = os.getenv("GALENOS_VISION_MODEL", "gpt-4o")
-
-    roi = normalize_roi(row.get("roi_json"))
-    image_url_for_ai = img_url
-    if roi:
-        try:
-            img_full = image_url_to_pil(img_url)
-            img_crop = crop_pil_to_roi(img_full, roi)
-            image_url_for_ai = pil_to_data_url_png(img_crop)
-        except Exception:
-            image_url_for_ai = img_url
-
-    signals = analyze_vascular_v2_signals(client=client, image_url=image_url_for_ai, model=model, extra_context=req.context)
-    oracle = run_vascular_v2_oracle(client=client, model=model, signals=signals, extra_context=req.context)
-
-    return {
-        "imaging_id": imaging_id,
-        "scenarios": oracle.get("scenarios", []),
-        "disclaimer": oracle.get("disclaimer", ""),
-    }
