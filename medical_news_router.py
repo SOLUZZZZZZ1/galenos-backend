@@ -23,16 +23,17 @@ router = APIRouter(prefix="/medical-news", tags=["medical-news"])
 # -----------------------------------------
 SOURCES = [
     {"name": "WHO · News Releases", "url": "https://www.who.int/rss-feeds/news-english.xml"},
-    {"name": "CDC · Newsroom", "url": "https://tools.cdc.gov/api/v2/resources/media/403372.rss"},
-    {"name": "NIH · News Releases", "url": "https://www.nih.gov/news-events/news-releases/rss.xml"},
-    {"name": "NICE · News", "url": "https://www.nice.org.uk/rss/news.xml"},
-    {"name": "ECDC · News", "url": "https://www.ecdc.europa.eu/en/news-events/feed"},
+    {"name": "NIH · News Releases", "url": "https://www.nih.gov/news/feed.xml"},
+    {"name": "CDC · Media Releases", "url": "https://tools.cdc.gov/api/v2/resources/media/132608.rss"},
+    {"name": "CDC · Media Releases (Alt)", "url": "https://tools.cdc.gov/api/v2/resources/media/403372.rss"},
+    {"name": "CDC · Emerging Infectious Diseases (Ahead of Print)", "url": "http://wwwnc.cdc.gov/eid/rss/ahead-of-print.xml"},
     {"name": "BMJ · Latest News", "url": "https://www.bmj.com/rss/news.xml"},
 ]
 
+
 USER_AGENT = "GalenosBot/1.0 (+https://galenos.pro)"
 
-RECENCY_DAYS = 45  # solo items recientes en LIVE
+RECENCY_DAYS = 10  # LIVE por defecto: últimos 10 días
 
 
 # -----------------------------------------
@@ -116,6 +117,7 @@ def _fetch_feed(url: str) -> feedparser.FeedParserDict:
 @router.get("/live")
 def live_news(
     limit: int = Query(20, ge=1, le=60),
+    days: int = Query(RECENCY_DAYS, ge=1, le=60),
 ):
     items: List[Dict[str, Any]] = []
     seen_urls = set()
@@ -155,7 +157,7 @@ def live_news(
 
     # Filtra: solo items recientes (para evitar noticias viejas)
     now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=RECENCY_DAYS)
+    cutoff = now - timedelta(days=days)
     filtered = []
     for it in items:
         pub = it.get("published_at")
@@ -172,8 +174,6 @@ def live_news(
             continue
         if pub < cutoff:
             continue
-        if pub > now + timedelta(days=2):
-            it["published_at"] = None
         filtered.append(it)
     items = filtered
 
