@@ -5,7 +5,7 @@
 # - POST /medical-news/seed-demo     -> inserta 1 demo en BD
 
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import re
 
 import feedparser
@@ -31,6 +31,9 @@ SOURCES = [
 ]
 
 USER_AGENT = "GalenosBot/1.0 (+https://galenos.pro)"
+
+RECENCY_DAYS = 45  # solo items recientes en LIVE
+
 
 # -----------------------------------------
 # Helpers
@@ -150,6 +153,30 @@ def live_news(
             # si una fuente falla, no rompe todo el feed
             continue
 
+    # Filtra: solo items recientes (para evitar noticias viejas)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=RECENCY_DAYS)
+    filtered = []
+    for it in items:
+        pub = it.get("published_at")
+        if pub is None:
+            filtered.append(it)
+            continue
+        try:
+            if pub.tzinfo is None:
+                pub = pub.replace(tzinfo=timezone.utc)
+        except Exception:
+            pub = None
+        if pub is None:
+            filtered.append(it)
+            continue
+        if pub < cutoff:
+            continue
+        if pub > now + timedelta(days=2):
+            it["published_at"] = None
+        filtered.append(it)
+    items = filtered
+
     # Ordena: más reciente primero.
     # FIX (Nora): muchos RSS NO traen published_parsed/updated_parsed.
     # Si published_at es None, usamos created_at como fallback (en vez de mandarlo a 1970),
@@ -158,7 +185,7 @@ def live_news(
         return x.get("published_at") or x.get("created_at") or datetime(1970, 1, 1, tzinfo=timezone.utc)
 
     items.sort(key=sort_key, reverse=True)
-    return {"items": items[:limit]}
+    return {"generated_at": datetime.now(timezone.utc), "items": items[:limit]}
 
 
 # -----------------------------------------
