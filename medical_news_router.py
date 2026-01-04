@@ -33,7 +33,7 @@ SOURCES = [
 
 USER_AGENT = "GalenosBot/1.0 (+https://galenos.pro)"
 
-RECENCY_DAYS = 10  # LIVE por defecto: últimos 10 días
+RECENCY_DAYS = 15  # LIVE por defecto: últimos 20 días
 
 
 # -----------------------------------------
