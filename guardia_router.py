@@ -423,7 +423,6 @@ def create_case(
             raise HTTPException(404, "Paciente no encontrado o no pertenece al usuario.")
         patient_ref_id = int(payload.patient_id)
 
-    try:
     attachments = _attachments_to_list(payload.attachments)
     _validate_attachments_belong_to_user(db, current_user.id, attachments)
 
@@ -491,7 +490,6 @@ def add_message(
     if blocked:
         return JSONResponse(status_code=400, content={"detail": f"De Guardia es un espacio clínico profesional. {reason}"})
 
-    try:
     attachments = _attachments_to_list(payload.attachments)
     # solo puedes adjuntar cosas de tus pacientes
     _validate_attachments_belong_to_user(db, current_user.id, attachments)
@@ -545,12 +543,7 @@ def favorite_case(
     fav = GuardFavorite(user_id=current_user.id, case_id=case_id, created_at=_now())
     db.add(fav)
     db.commit()
-    
-except Exception as e:
-    # Respuesta controlada para evitar error de red/CORS en frontend
-    return JSONResponse(status_code=500, content={"detail": "Error interno enviando mensaje.", "error": repr(e)})
-
-return {"ok": True}
+    return {"ok": True}
 
 
 @router.delete("/cases/{case_id}/favorite")
