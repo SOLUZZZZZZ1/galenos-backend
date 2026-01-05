@@ -6,7 +6,8 @@
 # - favoritos por usuario (para casos visibles)
 # - adjuntos Modo B siguen funcionando (pero SOLO puedes adjuntar cosas de tus pacientes)
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text as sql_text, or_
 from datetime import datetime
@@ -16,7 +17,7 @@ from database import get_db
 from auth import get_current_user
 from models import GuardCase, GuardMessage, GuardFavorite, DoctorProfile, Analytic, Imaging, Patient
 
-from moderation_utils import moderate_text_strong
+from moderation_utils import quick_block_reason
 
 import crud
 from pydantic import BaseModel, Field
@@ -409,11 +410,11 @@ def create_case(
     alias = _get_guard_alias(db, current_user.id)
     content = _extract_case_text(payload)
     if not content:
-        raise HTTPException(400, "Contenido vacío")
+        return JSONResponse(status_code=400, content={"detail":"Contenido vacío"})
 
-    action, reason = moderate_text_strong(content)
-    if action != "allow":
-        raise HTTPException(400, f"De Guardia es un espacio clínico profesional. {reason}")
+    blocked, reason = quick_block_reason(content)
+    if blocked:
+        return JSONResponse(status_code=400, content={"detail": f"De Guardia es un espacio clínico profesional. {reason}"})
 
     patient_ref_id = None
     if payload.patient_id:
@@ -422,6 +423,7 @@ def create_case(
             raise HTTPException(404, "Paciente no encontrado o no pertenece al usuario.")
         patient_ref_id = int(payload.patient_id)
 
+    try:
     attachments = _attachments_to_list(payload.attachments)
     _validate_attachments_belong_to_user(db, current_user.id, attachments)
 
@@ -483,16 +485,13 @@ def add_message(
     alias = _get_guard_alias(db, current_user.id)
     text = (payload.content or "").strip()
     if not text:
-        raise HTTPException(400, "Contenido vacío")
-
-    action, reason = moderate_text_strong(text)
-    if action != "allow":
-        raise HTTPException(400, f"De Guardia es un espacio clínico profesional. {reason}")
+        return JSONResponse(status_code=400, content={"detail":"Contenido vacío"})
 
     blocked, reason = quick_block_reason(text)
     if blocked:
-        raise HTTPException(400, f"De Guardia es un espacio clínico profesional. {reason}")
+        return JSONResponse(status_code=400, content={"detail": f"De Guardia es un espacio clínico profesional. {reason}"})
 
+    try:
     attachments = _attachments_to_list(payload.attachments)
     # solo puedes adjuntar cosas de tus pacientes
     _validate_attachments_belong_to_user(db, current_user.id, attachments)
@@ -546,7 +545,12 @@ def favorite_case(
     fav = GuardFavorite(user_id=current_user.id, case_id=case_id, created_at=_now())
     db.add(fav)
     db.commit()
-    return {"ok": True}
+    
+except Exception as e:
+    # Respuesta controlada para evitar error de red/CORS en frontend
+    return JSONResponse(status_code=500, content={"detail": "Error interno enviando mensaje.", "error": repr(e)})
+
+return {"ok": True}
 
 
 @router.delete("/cases/{case_id}/favorite")
