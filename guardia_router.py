@@ -6,8 +6,8 @@
 # - favoritos por usuario (para casos visibles)
 # - adjuntos Modo B siguen funcionando (pero SOLO puedes adjuntar cosas de tus pacientes)
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text as sql_text, or_
 from datetime import datetime
