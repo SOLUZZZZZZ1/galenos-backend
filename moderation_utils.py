@@ -1,51 +1,83 @@
-# moderation_utils.py — Capa 1 (determinista) · Galenos (STRICT)
-# Bloqueo inmediato de insultos/política/PII.
+# moderation_utils.py — STRONG (Galenos)
+# Moderación determinista reforzada para De Guardia / Comunidad (entorno clínico)
+
 import re
 import unicodedata
-from typing import Tuple
 
+def normalize_text(text: str) -> str:
+    if not text:
+        return ""
+    t = unicodedata.normalize("NFKD", text.strip())
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    t = re.sub(r"(.)\1{2,}", r"\1", t)  # iiiidiota -> idiota
+    t = re.sub(r"[^a-zA-Z0-9\s]", " ", t)
+    t = re.sub(r"\s+", " ", t)
+    return t.lower().strip()
+
+# Insultos (tokens simples)
 INSULT_TOKENS = {
-    "idiota","imbecil","imbécil","estupido","estúpido","gilipollas","subnormal",
-    "capullo","payaso","mierda","puta","tonto","tonta","imbeciles","imbéciles"
+    "idiota","imbecil","gilipollas","subnormal","estupido","tonto","payaso","inutil",
+    "mierda","asco","cretino","capullo","cabron","mierdas"
 }
 
-POLITICS_TOKENS = {
-    "psoe","pp","vox","podemos","sumar","ciudadanos","erc","bildu","junts",
-    "izquierda","derecha","fascista","comunista","socialista","liberal",
-    "presidente","gobierno","ministro","congreso","senado","elecciones","votar","campaña",
-    "religion","religión","iglesia","allah","dios"
-}
-
-PII_PATTERNS = [
-    r"\b\d{8}[A-Za-z]\b",
-    r"\b\+?\d{9,14}\b",
-    r"\b(calle|av\.?|avenida|plaza|paseo)\b",
-    r"\b(nº|no\.?)\s*\d+\b",
+# Insultos compuestos / frases
+INSULT_PATTERNS = [
+    r"\bhijo\s+de\s+puta\b",
+    r"\bputa\b",
+    r"\bputo\s+\w+\b",
+    r"\bde\s+mierda\b",
+    r"\bmaldito\s+\w+\b",
+    r"\bque\s+te\s+den\b",
+    r"\bme\s+cago\s+en\b",
+    r"\bimbecil\s+de\s+\w+\b",
 ]
 
-def _normalize(text: str) -> str:
-    return unicodedata.normalize("NFKC", (text or "").strip())
+# Política / ideología (tolerancia cero)
+POLITICS_PATTERNS = [
+    r"\bgobierno\b",
+    r"\bpolitic[oa]s?\b",
+    r"\bfascis\w*\b",
+    r"\bcomunis\w*\b",
+    r"\broj[oa]s?\b",
+    r"\bfach[ao]s?\b",
+    r"\bprogre\w*\b",
+    r"\bultraderech\w*\b",
+    r"\bizquierd\w*\b",
+    r"\bderech\w*\b",
+    r"\bvox\b",
+    r"\bpp\b",
+    r"\bpsoe\b",
+]
 
-def _tokenize(text: str) -> set[str]:
-    t = _normalize(text).lower()
-    t = re.sub(r"[^\wáéíóúüñ]+", " ", t, flags=re.IGNORECASE)
-    return {x for x in t.split() if x}
+# Prevee PII (review -> aquí bloqueamos en De Guardia por defecto)
+PII_PATTERNS = [
+    r"\b\d{8}[a-zA-Z]\b",  # DNI
+    r"\b\d{9}\b",          # teléfono
+    r"\bcalle\s+\w+",
+    r"\bavenida\s+\w+",
+    r"\bpasaporte\b",
+    r"\bemail\b",
+]
 
-def quick_block_reason(text: str) -> Tuple[bool, str]:
-    if not (text or "").strip():
-        return True, "Mensaje vacío."
-
-    tokens = _tokenize(text)
-
+def moderate_text_strong(text: str):
+    t = normalize_text(text)
+    if not t:
+        return "block", "Mensaje vacío."
+    for pat in INSULT_PATTERNS:
+        if re.search(pat, t):
+            return "block", "Lenguaje no profesional."
+    for pat in POLITICS_PATTERNS:
+        if re.search(pat, t):
+            return "block", "Contenido político o ideológico no permitido."
+    tokens = set(t.split())
     if tokens & INSULT_TOKENS:
-        return True, "Lenguaje no profesional."
-
-    if tokens & POLITICS_TOKENS:
-        return True, "Contenido político/ideológico no permitido en De Guardia."
-
-    t = _normalize(text)
+        return "block", "Lenguaje no profesional."
     for pat in PII_PATTERNS:
-        if re.search(pat, t, flags=re.IGNORECASE):
-            return True, "Posibles datos identificativos. Elimina información personal."
+        if re.search(pat, t):
+            return "review", "Posible dato personal o identificable. Elimina datos y vuelve a enviar."
+    return "allow", "OK"
 
-    return False, ""
+# Compatibilidad: si en algún punto se importa quick_block_reason
+def quick_block_reason(text: str):
+    action, reason = moderate_text_strong(text)
+    return (action != "allow"), reason

@@ -16,7 +16,7 @@ from database import get_db
 from auth import get_current_user
 from models import GuardCase, GuardMessage, GuardFavorite, DoctorProfile, Analytic, Imaging, Patient
 
-from moderation_utils import quick_block_reason
+from moderation_utils import moderate_text_strong
 
 import crud
 from pydantic import BaseModel, Field
@@ -411,8 +411,8 @@ def create_case(
     if not content:
         raise HTTPException(400, "Contenido vacío")
 
-    blocked, reason = quick_block_reason(content)
-    if blocked:
+    action, reason = moderate_text_strong(content)
+    if action != "allow":
         raise HTTPException(400, f"De Guardia es un espacio clínico profesional. {reason}")
 
     patient_ref_id = None
@@ -484,6 +484,10 @@ def add_message(
     text = (payload.content or "").strip()
     if not text:
         raise HTTPException(400, "Contenido vacío")
+
+    action, reason = moderate_text_strong(text)
+    if action != "allow":
+        raise HTTPException(400, f"De Guardia es un espacio clínico profesional. {reason}")
 
     blocked, reason = quick_block_reason(text)
     if blocked:
