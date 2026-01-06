@@ -19,7 +19,7 @@ from schemas import MedicalNewsReturn
 router = APIRouter(prefix="/medical-news", tags=["medical-news"])
 
 # -----------------------------------------
-# FUENTES RSS (sin SciAm, como me has pedido)
+# FUENTES RSS (sin SciAm)
 # -----------------------------------------
 SOURCES = [
     {"name": "WHO · News Releases", "url": "https://www.who.int/rss-feeds/news-english.xml"},
@@ -30,10 +30,9 @@ SOURCES = [
     {"name": "BMJ · Latest News", "url": "https://www.bmj.com/rss/news.xml"},
 ]
 
-
 USER_AGENT = "GalenosBot/1.0 (+https://galenos.pro)"
 
-RECENCY_DAYS = 15  # LIVE por defecto: últimos 20 días
+RECENCY_DAYS = 15  # LIVE por defecto: últimos N días
 
 
 # -----------------------------------------
@@ -60,8 +59,7 @@ def _to_dt(entry: Dict[str, Any]) -> Optional[datetime]:
     if not st:
         return None
     try:
-        dt = datetime(*st[:6], tzinfo=timezone.utc)
-        return dt
+        return datetime(*st[:6], tzinfo=timezone.utc)
     except Exception:
         return None
 
@@ -73,13 +71,10 @@ def _extract_summary(entry: Dict[str, Any]) -> str:
         s = entry["summary_detail"].get("value") or ""
     if not s:
         s = entry.get("description") or ""
-    return _clean_text(s)[:800]  # recorte razonable
+    return _clean_text(s)[:800]
 
 
 def _guess_tags(title: str, summary: str) -> str:
-    """
-    Tags simples (no críticos). Puedes ampliarlo luego.
-    """
     t = (title + " " + summary).lower()
 
     tags = []
@@ -101,13 +96,12 @@ def _guess_tags(title: str, summary: str) -> str:
     if not tags:
         tags.append("general")
 
-    # sin duplicados
     tags = list(dict.fromkeys(tags))
     return ",".join(tags)
 
 
 def _fetch_feed(url: str) -> feedparser.FeedParserDict:
-    # Importante: algunos RSS “callan” si no envías User-Agent
+    # Algunos RSS bloquean si no envías User-Agent
     return feedparser.parse(url, request_headers={"User-Agent": USER_AGENT})
 
 
@@ -155,39 +149,35 @@ def live_news(
             # si una fuente falla, no rompe todo el feed
             continue
 
-    # Filtra: solo items recientes (para evitar noticias viejas)
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=days)
-    filtered = []
+
+    # ✅ FILTRO BLANDO:
+    # - Si published_at existe y es viejo -> fuera
+    # - Si published_at es None -> NO descartamos (para que LIVE nunca quede vacío)
+    filtered: List[Dict[str, Any]] = []
     for it in items:
         pub = it.get("published_at")
-        # Si no hay fecha fiable, NO descartamos
+        if pub is not None:
+            try:
+                if pub.tzinfo is None:
+                    pub = pub.replace(tzinfo=timezone.utc)
+            except Exception:
+                pub = None
+
         if pub is not None and pub < cutoff:
-        continue
-
-filtered.append(it)
-
-        try:
-            if pub.tzinfo is None:
-                pub = pub.replace(tzinfo=timezone.utc)
-        except Exception:
-            pub = None
-        if pub is None:
-            filtered.append(it)
             continue
-        if pub < cutoff:
-            continue
+
         filtered.append(it)
+
     items = filtered
 
-    # Ordena: más reciente primero.
-    # FIX (Nora): muchos RSS NO traen published_parsed/updated_parsed.
-    # Si published_at es None, usamos created_at como fallback (en vez de mandarlo a 1970),
-    # para que el feed siempre muestre items "vivos" y no se queden fuera por el limit.
+    # Ordena: más reciente primero (published_at si existe; si no, created_at)
     def sort_key(x):
         return x.get("published_at") or x.get("created_at") or datetime(1970, 1, 1, tzinfo=timezone.utc)
 
     items.sort(key=sort_key, reverse=True)
+
     return {"generated_at": datetime.now(timezone.utc), "items": items[:limit]}
 
 
