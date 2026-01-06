@@ -61,8 +61,10 @@ class PatientReturn(PatientBase):
     age: Optional[int] = None
     gender: Optional[str] = None
     notes: Optional[str] = None
-    # 👇 NUEVO: número clínico por médico (1,2,3…)
+    # 👇 número clínico por médico (1,2,3…)
     patient_number: Optional[int] = None
+    # ✅ NUEVO: archivado
+    archived: bool = False
 
     class Config:
         from_attributes = True
@@ -230,7 +232,7 @@ class DoctorProfileReturn(DoctorProfileBase):
     id: int
     user_id: int
     email: EmailStr
-    # 👇 NUEVOS CAMPOS: alias clínico (De guardia)
+    # 👇 alias clínico (De guardia)
     guard_alias: Optional[str] = None
     guard_alias_locked: bool = False
 

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, BigInteger, String, Float, ForeignKey, DateTime, Text, Date
+from sqlalchemy import Column, Integer, BigInteger, String, Float, ForeignKey, DateTime, Text, Date, Boolean
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -40,7 +40,6 @@ class User(Base):
         back_populates="created_by",
         foreign_keys="Invitation.created_by_id",
     )
-
 
 
 # =========================
@@ -103,12 +102,14 @@ class Patient(Base):
 
     patient_number = Column(Integer)
 
+    # ✅ NUEVO: archivado (soft delete)
+    archived = Column(Boolean, default=False, nullable=False)
+
     doctor = relationship("User", back_populates="patients")
     analytics = relationship("Analytic", back_populates="patient", cascade="all, delete")
     imaging = relationship("Imaging", back_populates="patient", cascade="all, delete")
     notes_rel = relationship("ClinicalNote", back_populates="patient", cascade="all, delete")
     timeline_items = relationship("TimelineItem", back_populates="patient", cascade="all, delete")
-
 
 
 # =========================
@@ -126,6 +127,8 @@ class PatientReviewState(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 # =========================
 # ANALYTICS
 # =========================
@@ -356,6 +359,7 @@ class MedicalNews(Base):
     specialty_tags = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
 # =========================
 # MÓDULO COMUNIDAD (FORMACIÓN)
 # =========================
@@ -391,4 +395,3 @@ class CommunityResponse(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     case = relationship("CommunityCase", back_populates="responses")
-
