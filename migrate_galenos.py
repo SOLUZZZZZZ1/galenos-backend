@@ -7,8 +7,8 @@ router = APIRouter(prefix="/admin/migrate-galenos", tags=["admin-migrate-galenos
 
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "GalenosAdminToken@123"
 
-# ✅ Versión actualizada (incluye VASCULAR)
-MIGRATE_GALENOS_VERSION = "MSK_GEOMETRY_V1 + VASCULAR_GEOMETRY_V1 + ROI_V1"
+# ✅ Versión actualizada (incluye archived en patients)
+MIGRATE_GALENOS_VERSION = "MSK_GEOMETRY_V1 + VASCULAR_GEOMETRY_V1 + ROI_V1 + PATIENT_ARCHIVE_V1"
 
 
 def _auth(x_admin_token: str | None):
@@ -58,8 +58,14 @@ CREATE TABLE IF NOT EXISTS patients (
   gender TEXT,
   notes TEXT,
   patient_number INTEGER,
-  created_at TIMESTAMP DEFAULT NOW()
+  created_at TIMESTAMP DEFAULT NOW(),
+  archived BOOLEAN DEFAULT FALSE
 );
+"""
+
+SQL_PATIENTS_ALTER_ARCHIVED = """
+ALTER TABLE patients
+ADD COLUMN IF NOT EXISTS archived BOOLEAN DEFAULT FALSE;
 """
 
 SQL_ANALYTICS = """
@@ -236,6 +242,7 @@ def migrate_init(x_admin_token: str | None = Header(None)):
             conn.execute(text(SQL_USERS))
             conn.execute(text(SQL_DOCTOR_PROFILES))
             conn.execute(text(SQL_PATIENTS))
+            conn.execute(text(SQL_PATIENTS_ALTER_ARCHIVED))
 
             conn.execute(text(SQL_ANALYTICS))
             conn.execute(text(SQL_IMAGING))
@@ -270,9 +277,8 @@ def migrate_init(x_admin_token: str | None = Header(None)):
             "status": "ok",
             "version": MIGRATE_GALENOS_VERSION,
             "message": (
-                "Migración aplicada: MSK_GEOMETRY_V1 + VASCULAR_GEOMETRY_V1 "
-                "(msk_overlay_json, msk_overlay_confidence, "
-                "vascular_overlay_json, vascular_overlay_confidence) + columnas previas."
+                "Migración aplicada: MSK_GEOMETRY_V1 + VASCULAR_GEOMETRY_V1 + ROI_V1 + PATIENT_ARCHIVE_V1 "
+                "(añade columna patients.archived)."
             ),
         }
 

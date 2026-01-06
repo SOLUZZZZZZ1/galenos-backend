@@ -1,8 +1,9 @@
 # crud.py — Lógica de base de datos para Galenos.pro
-
 from sqlalchemy.orm import Session
 import json
-from datetime import date
+from datetime import date, datetime
+
+from sqlalchemy import func
 
 from models import (
     User,
@@ -14,7 +15,9 @@ from models import (
     ClinicalNote,
     TimelineItem,
     DoctorProfile,
+    PatientReviewState,
 )
+
 from schemas import (
     PatientCreate,
     PatientUpdate,
@@ -25,6 +28,9 @@ from schemas import (
 
 # 🔐 Cifrado de texto
 from security_crypto import encrypt_text, decrypt_text
+
+# ✅ Storage (B2) for hard delete cleanup
+import storage_b2
 
 
 # ===============================================
@@ -63,6 +69,10 @@ def create_patient(db: Session, doctor_id: int, data: PatientCreate):
         doctor_id=doctor_id,
         patient_number=next_number,
     )
+    # archived default should be False at DB level; keep safe in case model has it.
+    if hasattr(patient, "archived"):
+        setattr(patient, "archived", False)
+
     db.add(patient)
     db.commit()
     db.refresh(patient)
@@ -79,13 +89,17 @@ def create_patient(db: Session, doctor_id: int, data: PatientCreate):
     return patient
 
 
-def get_patients_for_doctor(db: Session, doctor_id: int):
-    return (
-        db.query(Patient)
-        .filter(Patient.doctor_id == doctor_id)
-        .order_by(Patient.created_at.desc())
-        .all()
-    )
+def get_patients_for_doctor(db: Session, doctor_id: int, *, include_archived: bool = False, archived_only: bool = False):
+    q = db.query(Patient).filter(Patient.doctor_id == doctor_id)
+
+    # Compatibilidad: si no existe columna archived, devuelve como siempre
+    if hasattr(Patient, "archived"):
+        if archived_only:
+            q = q.filter(Patient.archived == True)   # noqa: E712
+        elif not include_archived:
+            q = q.filter((Patient.archived == False) | (Patient.archived.is_(None)))  # noqa: E712
+
+    return q.order_by(Patient.created_at.desc()).all()
 
 
 def get_patient_by_id(db: Session, patient_id: int, doctor_id: int):
@@ -122,13 +136,29 @@ def update_patient(db: Session, patient: Patient, data: PatientUpdate):
     return patient
 
 
+# ✅ Archivar / Restaurar (soft delete)
+def archive_patient(db: Session, patient: Patient):
+    if not hasattr(patient, "archived"):
+        # Si aún no existe la columna, no rompemos nada:
+        return patient
+    patient.archived = True
+    db.commit()
+    db.refresh(patient)
+    return patient
+
+
+def unarchive_patient(db: Session, patient: Patient):
+    if not hasattr(patient, "archived"):
+        return patient
+    patient.archived = False
+    db.commit()
+    db.refresh(patient)
+    return patient
+
 
 # ===============================================
 # ESTADO DE REVISIÓN (Última revisión por médico y paciente)
 # ===============================================
-from datetime import datetime
-from models import PatientReviewState
-
 def get_review_state(db: Session, doctor_id: int, patient_id: int):
     return (
         db.query(PatientReviewState)
@@ -138,6 +168,7 @@ def get_review_state(db: Session, doctor_id: int, patient_id: int):
         )
         .first()
     )
+
 
 def upsert_review_state(db: Session, doctor_id: int, patient_id: int, last_reviewed_analytic_id: int | None):
     state = get_review_state(db, doctor_id, patient_id)
@@ -155,6 +186,7 @@ def upsert_review_state(db: Session, doctor_id: int, patient_id: int, last_revie
     db.commit()
     db.refresh(state)
     return state
+
 
 # ===============================================
 # ANALÍTICAS (DE MOMENTO SIN CIFRAR, PARA NO ROMPER UI)
@@ -209,7 +241,6 @@ def add_markers_to_analytic(db: Session, analytic_id: int, markers: list):
     for m in markers:
         name = m.get("name")
         if not name:
-            # Si no hay nombre, no tiene sentido guardar este marcador
             continue
 
         value = to_float_or_none(m.get("value"))
@@ -220,10 +251,10 @@ def add_markers_to_analytic(db: Session, analytic_id: int, markers: list):
         marker = AnalyticMarker(
             analytic_id=analytic_id,
             name=name,
-            value=value,      # Solo número o NULL
+            value=value,
             unit=unit,
-            ref_min=ref_min,  # Solo número o NULL
-            ref_max=ref_max,  # Solo número o NULL
+            ref_min=ref_min,
+            ref_max=ref_max,
         )
         db.add(marker)
 
@@ -376,7 +407,6 @@ def get_notes_for_patient(db: Session, patient_id: int):
         .all()
     )
 
-    # DESCIFRAR antes de devolver
     for note in notes:
         note.title = decrypt_text(note.title)
         note.content = decrypt_text(note.content)
@@ -433,14 +463,13 @@ def update_doctor_profile(db: Session, profile: DoctorProfile, data: DoctorProfi
     db.refresh(profile)
     return profile
 
+
 # ===============================================
 # STORAGE / CUOTA DE ALMACENAMIENTO
 # ===============================================
-from sqlalchemy import func
-
-# Límites de almacenamiento
 MAX_QUOTA_BYTES = 10 * 1024 * 1024 * 1024   # 10 GB
 HARD_LIMIT_BYTES = 11 * 1024 * 1024 * 1024  # margen técnico
+
 
 def get_used_bytes_for_user(db: Session, user_id: int) -> int:
     """
@@ -483,7 +512,6 @@ def get_storage_quota_status(db: Session, user_id: int) -> dict:
     }
 
 
-
 # ===============================================
 # ROI (Región clínica analizada) — Imaging
 # ===============================================
@@ -497,3 +525,73 @@ def set_imaging_roi(db: Session, imaging_id: int, roi: dict | None, version: str
     db.commit()
     db.refresh(imaging)
     return imaging
+
+
+# ===============================================
+# ✅ HARD DELETE (Paciente + historial + B2)
+# ===============================================
+def delete_patient_permanently(db: Session, patient: Patient, *, doctor_id: int):
+    """
+    Borrado irreversible:
+    - Paciente + historial completo en BD (analytics, markers, imaging, patterns, notes, timeline, review_state)
+    - Limpieza de ficheros en Backblaze B2 (por prefijo, original+preview)
+    """
+    patient_id = int(patient.id)
+
+    # 1) Recolectar IDs antes de borrar (para borrar B2 por prefijo)
+    analytic_ids = [int(a.id) for a in db.query(Analytic.id).filter(Analytic.patient_id == patient_id).all()]
+    imaging_ids = [int(i.id) for i in db.query(Imaging.id).filter(Imaging.patient_id == patient_id).all()]
+
+    # 2) Borrar B2 (mejor esfuerzo). Si falla B2, NO borramos BD -> evitamos huérfanos “invisibles”
+    #    Si prefieres lo contrario, te lo cambio, pero esta es la opción más segura.
+    try:
+        # Imaging (incluye cosmetic, porque category="imaging" también en cosmetic router)
+        for iid in imaging_ids:
+            prefix = f"prod/users/{int(doctor_id)}/imaging/{iid}/"
+            storage_b2.delete_prefix(prefix)
+
+        # Analytics (si usas category="analytics" o "analytics" en upload)
+        # Aunque no tengamos el upload aquí, este prefijo es la convención natural.
+        for aid in analytic_ids:
+            prefix = f"prod/users/{int(doctor_id)}/analytics/{aid}/"
+            storage_b2.delete_prefix(prefix)
+
+    except Exception as e:
+        # No tocamos BD si no pudimos limpiar storage de forma consistente
+        raise RuntimeError(f"Error limpiando almacenamiento (B2). No se ha borrado en BD. Detalle: {e}")
+
+    # 3) BD: borrar dependencias explícitas (aunque haya cascades, lo dejamos determinista)
+    try:
+        # Markers
+        if analytic_ids:
+            db.query(AnalyticMarker).filter(AnalyticMarker.analytic_id.in_(analytic_ids)).delete(synchronize_session=False)
+
+        # Imaging patterns
+        if imaging_ids:
+            db.query(ImagingPattern).filter(ImagingPattern.imaging_id.in_(imaging_ids)).delete(synchronize_session=False)
+
+        # Timeline
+        db.query(TimelineItem).filter(TimelineItem.patient_id == patient_id).delete(synchronize_session=False)
+
+        # Notes
+        db.query(ClinicalNote).filter(ClinicalNote.patient_id == patient_id).delete(synchronize_session=False)
+
+        # Review state
+        db.query(PatientReviewState).filter(
+            PatientReviewState.doctor_id == int(doctor_id),
+            PatientReviewState.patient_id == patient_id,
+        ).delete(synchronize_session=False)
+
+        # Imaging + Analytics
+        db.query(Imaging).filter(Imaging.patient_id == patient_id).delete(synchronize_session=False)
+        db.query(Analytic).filter(Analytic.patient_id == patient_id).delete(synchronize_session=False)
+
+        # Patient
+        db.query(Patient).filter(Patient.id == patient_id, Patient.doctor_id == int(doctor_id)).delete(synchronize_session=False)
+
+        db.commit()
+        return True
+
+    except Exception as e:
+        db.rollback()
+        raise e

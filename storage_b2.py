@@ -9,6 +9,9 @@
 # - Bucket must be PRIVATE
 # - Credentials are read from environment variables
 # - This module does NOT delete files (archiving handled elsewhere)
+#
+# ✅ Update (backend delete support):
+# - Adds delete_prefix() to support hard-delete of patient history (B2 cleanup)
 
 import os
 import hashlib
@@ -151,3 +154,63 @@ def get_object_size(file_key: str) -> int:
         return int(r.get("ContentLength", 0))
     except ClientError as e:
         raise RuntimeError(f"Head object failed: {e}")
+
+
+# ==============================
+# DELETE API (used by hard delete)
+# ==============================
+def _list_keys(prefix: str) -> list[str]:
+    """List all keys under a prefix."""
+    keys: list[str] = []
+    token = None
+
+    while True:
+        kwargs = {"Bucket": B2_BUCKET, "Prefix": prefix}
+        if token:
+            kwargs["ContinuationToken"] = token
+
+        resp = s3.list_objects_v2(**kwargs)
+        for obj in (resp.get("Contents") or []):
+            k = obj.get("Key")
+            if k:
+                keys.append(k)
+
+        if resp.get("IsTruncated"):
+            token = resp.get("NextContinuationToken")
+        else:
+            break
+
+    return keys
+
+
+def _delete_keys(keys: list[str]) -> int:
+    """Delete keys in batches (S3 limit: 1000 objects per request)."""
+    if not keys:
+        return 0
+
+    deleted = 0
+    chunk_size = 1000
+    for i in range(0, len(keys), chunk_size):
+        chunk = keys[i : i + chunk_size]
+        try:
+            s3.delete_objects(
+                Bucket=B2_BUCKET,
+                Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": True},
+            )
+            deleted += len(chunk)
+        except ClientError as e:
+            raise RuntimeError(f"Delete failed: {e}")
+
+    return deleted
+
+
+def delete_prefix(prefix: str) -> int:
+    """
+    Delete EVERYTHING under a given prefix.
+    Example:
+      prefix = "prod/users/12/imaging/345/"
+    """
+    if not prefix:
+        return 0
+    keys = _list_keys(prefix)
+    return _delete_keys(keys)
