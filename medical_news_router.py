@@ -161,9 +161,12 @@ def live_news(
     filtered = []
     for it in items:
         pub = it.get("published_at")
-        if pub is None:
-            filtered.append(it)
-            continue
+        # Si no hay fecha fiable, NO descartamos
+        if pub is not None and pub < cutoff:
+        continue
+
+filtered.append(it)
+
         try:
             if pub.tzinfo is None:
                 pub = pub.replace(tzinfo=timezone.utc)
