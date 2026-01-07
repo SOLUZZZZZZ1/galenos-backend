@@ -32,6 +32,7 @@ import patients
 import analytics
 import imaging
 import vascular_v2_router
+import lung_v2_router
 import imaging_chat_router
 import imaging_cosmetic_router  # ✅ AÑADIDO: router cirugía/cosmetic
 import notes
@@ -179,6 +180,7 @@ app.include_router(patients.router)
 app.include_router(analytics.router)
 app.include_router(imaging.router)
 app.include_router(vascular_v2_router.router)
+app.include_router(lung_v2_router.router)
 app.include_router(imaging_chat_router.router)
 
 app.include_router(imaging_cosmetic_router.router)  # ✅ AÑADIDO: /imaging/cosmetic/* (upload/analyze/compare)
